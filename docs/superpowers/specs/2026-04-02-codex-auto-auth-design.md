@@ -17,6 +17,7 @@ A CLI tool that automates OpenAI account registration and OAuth authorization us
 - Python 3.12, managed by uv
 - `playwright` — browser automation
 - `click` — CLI argument parsing
+- `aiohttp` — local HTTP callback server (receives OAuth redirect)
 
 ## CLI Usage
 
@@ -50,11 +51,28 @@ Written to `results/<timestamp>.json`:
 ]
 ```
 
+## OAuth Callback Server
+
+A local HTTP server (default port 1455) runs in the background to receive OAuth redirects.
+
+**URL construction:**
+- Base template: `https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri={LOCAL_CALLBACK}&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke&code_challenge_method=S256&codex_cli_simplified_flow=true&originator=codex_cli_rs`
+- `redirect_uri` replaced with `http://localhost:{port}/auth/callback`
+- `code_challenge` and `state` generated per-session (PKCE flow)
+
+The callback server captures the authorization code from the redirect, confirming the account was successfully authorized.
+
 ## Pipeline (per account)
+
+### Phase 0: Start Callback Server
+
+1. Start local HTTP server on port 1455 (or first available port)
+2. Construct OAuth URL with local redirect_uri
+3. Server waits for callback with `?code=...` parameter
 
 ### Phase 1: OpenAI OAuth Registration
 
-1. Open OpenAI OAuth URL in browser
+1. Open constructed OAuth URL in browser
 2. Click "Sign up" button
 3. Enter email address (hotmail)
 4. Enter password
@@ -71,8 +89,8 @@ Written to `results/<timestamp>.json`:
 ### Phase 3: Complete Registration
 
 1. Enter verification code
-2. Set username
-3. Set birthday
+2. Set username — randomly generated (unique per account)
+3. Set birthday — random: year 1990-1999, month 1-12, day 1-25
 4. Complete registration
 
 ### Phase 4: Second OAuth Pass (Consent)
@@ -80,8 +98,8 @@ Written to `results/<timestamp>.json`:
 1. Sign out of OpenAI
 2. Re-visit OAuth URL
 3. Go through login flow again
-4. Handle consent/authorization confirmation screen
-5. Callback triggers — account authorized
+4. Handle consent/authorization confirmation screen (button XPath TBD)
+5. Callback triggers — local server receives auth code → account authorized
 
 ## Human-Like Behavior
 
@@ -96,6 +114,10 @@ Every interaction step includes randomized delays:
 
 ```
 main.py
+├── generate_oauth_url(port, code_challenge, state) -> str
+├── start_callback_server(port) -> asyncio.Server
+├── generate_username() -> str
+├── generate_birthday() -> str  # MM/DD/YYYY, year 1990-1999
 ├── human_delay(min_s, max_s)
 ├── human_type(page, selector, text)
 ├── step_openai_register(page, email, password)
@@ -103,7 +125,7 @@ main.py
 ├── step_complete_register(page, code, username, birthday)
 ├── step_second_oauth(page, email, password) -> dict
 ├── process_account(browser, account) -> dict
-└── main(accounts_file, headed, delay)  # Click CLI entry
+└── main(accounts_file, headed, delay, port)  # Click CLI entry
 ```
 
 ## Error Handling
@@ -115,7 +137,7 @@ main.py
 
 ## Open Questions (to be resolved during implementation)
 
-- Exact OpenAI OAuth URL (user will provide)
-- Hotmail login URL and selectors (user will provide)
-- Username and birthday values — hardcoded or configurable?
-- Whether birthday/username come from the account JSON or are generated
+- Hotmail login URL and page selectors (user will provide)
+- OpenAI signup/login page selectors (user will provide)
+- Consent confirmation button XPath (user will provide after walking the flow)
+- Username generation strategy (random string? word combo? TBD)
