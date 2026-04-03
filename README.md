@@ -11,6 +11,7 @@ codex_manager_auth/
   accounts.py
   checkpoint.py
   outlook_mail.py
+  openai_oauth.py
   openai_selectors.py
 tests/
 ```
@@ -25,6 +26,7 @@ tests/
 - `codex_manager_auth/accounts.py`: account-file parsing and password normalization.
 - `codex_manager_auth/checkpoint.py`: checkpoint CSV read/write and atomic upsert.
 - `codex_manager_auth/outlook_mail.py`: Outlook refresh-token exchange and verification-code polling.
+- `codex_manager_auth/openai_oauth.py`: OAuth PKCE generation, callback parsing, token exchange, token file output.
 - `codex_manager_auth/openai_selectors.py`: OpenAI page selectors and hard-failure URL keywords.
 
 ## Run
@@ -32,6 +34,8 @@ tests/
 ```bash
 uv run python main.py
 ```
+
+Successful OAuth completion now writes token files into the configured `token_output_dir` (default: `tokens/`).
 
 ## Test
 

@@ -137,6 +137,29 @@ class _RateLimitPage:
         return object()
 
 
+class _FakeOAuthClient:
+    def __init__(self):
+        self.client_id = "client-123"
+        self.redirect_port = 2456
+        self.redirect_uri = "http://localhost:2456/auth/callback"
+        self.session = object()
+        self.exchange_token_and_save = AsyncMock(return_value={"account_id": "acct-123"})
+
+    def create_session(self):
+        return self.session
+
+    def build_auth_url(self, session):
+        assert session is self.session
+        return "https://auth.openai.com/oauth/authorize?state=session"
+
+    def extract_callback_params(self, callback_url, session):
+        assert session is self.session
+        if not isinstance(callback_url, str):
+            return None
+        assert callback_url.startswith(self.redirect_uri)
+        return {"code": "auth-code", "state": "session"}
+
+
 class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_skips_registration_verification_when_account_already_exists(self):
         class _RunPage:
@@ -165,6 +188,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         browser = _RunBrowser(context)
         playwright_manager = _RunPlaywrightManager(browser)
         stealth = type("StealthStub", (), {"apply_stealth_async": AsyncMock()})()
+        oauth_client = _FakeOAuthClient()
 
         with patch.object(main, "async_playwright", return_value=playwright_manager), patch.object(
             main,
@@ -186,8 +210,8 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         ) as verify_mock, patch.object(
             main,
             "openai_second_login",
-            AsyncMock(),
-        ) as login_mock, patch.object(main, "Stealth", return_value=stealth):
+            AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
+        ) as login_mock, patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
             result = await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
         verify_mock.assert_not_awaited()
@@ -222,6 +246,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         browser = _RunBrowser(context)
         playwright_manager = _RunPlaywrightManager(browser)
         stealth = type("StealthStub", (), {"apply_stealth_async": AsyncMock()})()
+        oauth_client = _FakeOAuthClient()
 
         with patch.object(main, "async_playwright", return_value=playwright_manager), patch.object(
             main,
@@ -234,12 +259,69 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main,
             "openai_second_login",
-            AsyncMock(),
-        ) as login_mock, patch.object(main, "Stealth", return_value=stealth):
+            AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
+        ) as login_mock, patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
             await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
         self.assertEqual(register_mock.await_args.args[2], "Secret123000")
         self.assertEqual(login_mock.await_args.args[2], "Secret123000")
+
+    async def test_run_login_stage_exchanges_token_after_successful_callback(self):
+        class _RunPage:
+            pass
+
+        class _RunContext:
+            def __init__(self):
+                self.new_page = AsyncMock(return_value=_RunPage())
+
+        class _RunBrowser:
+            def __init__(self, context):
+                self.new_context = AsyncMock(return_value=context)
+                self.close = AsyncMock()
+
+        class _RunPlaywrightManager:
+            def __init__(self, browser):
+                self.chromium = type("Chromium", (), {"launch": AsyncMock(return_value=browser)})()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        context = _RunContext()
+        browser = _RunBrowser(context)
+        playwright_manager = _RunPlaywrightManager(browser)
+        stealth = type("StealthStub", (), {"apply_stealth_async": AsyncMock()})()
+        oauth_client = _FakeOAuthClient()
+        registration_result = main.AccountExecutionResult(
+            email="user@example.com",
+            password="Secret123000",
+            registration_status="success",
+            login_status="pending",
+            error_reason="",
+            registration_attempts=1,
+        )
+        account = main.AccountRecord(
+            email="user@example.com",
+            password="Secret123",
+            client_id="client-123",
+            refresh_token="refresh-token",
+        )
+
+        with patch.object(main, "async_playwright", return_value=playwright_manager), patch.object(
+            main,
+            "exchange_refresh_token",
+            AsyncMock(return_value="access-token"),
+        ), patch.object(
+            main,
+            "openai_second_login",
+            AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
+        ), patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
+            result = await main.run_login_stage(account, registration_result)
+
+        oauth_client.exchange_token_and_save.assert_awaited_once_with("auth-code", "user@example.com", oauth_client.session)
+        self.assertEqual(result.login_status, "success")
 
     async def test_openai_login_flow_raises_when_no_expected_followup_state_is_detected(self):
         page = _LoginFlowPage()

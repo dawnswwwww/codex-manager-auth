@@ -4,7 +4,6 @@ from pathlib import Path
 import random
 import re
 import time
-from urllib.parse import parse_qs, urlparse
 
 from .accounts import (
     ACCOUNT_LINE_SEPARATOR,
@@ -33,6 +32,7 @@ from .models import (
     RegistrationFlowOutcome,
     StageExecutionResult,
 )
+from .openai_oauth import OpenAIOAuthClient
 from .openai_selectors import (
     ADD_PHONE_URL_KEYWORDS,
     CSS_INVALID_CODE_ERROR,
@@ -65,6 +65,11 @@ from playwright_stealth import Stealth
 ACCOUNT_FILE = APP_CONFIG.account_file
 MAX_STAGE_ATTEMPTS = 3
 LOGIN_ELIGIBLE_REGISTRATION_STATUSES = {"success", "already_exists"}
+OAUTH_CLIENT = OpenAIOAuthClient(
+    client_id=APP_CONFIG.oauth_client_id,
+    redirect_port=APP_CONFIG.oauth_redirect_port,
+    token_output_dir=APP_CONFIG.token_output_dir,
+)
 
 
 def normalize_registration_flow_outcome(value) -> RegistrationFlowOutcome:
@@ -74,11 +79,7 @@ def normalize_registration_flow_outcome(value) -> RegistrationFlowOutcome:
 
 
 def get_expected_callback_url() -> str:
-    redirect_uri = parse_qs(urlparse(OPENAI_OAUTH_URL).query).get("redirect_uri", [None])[0]
-    if not redirect_uri:
-        raise RuntimeError("redirect_uri is missing from OPENAI_OAUTH_URL")
-    return redirect_uri
-OPENAI_OAUTH_URL = APP_CONFIG.openai_oauth_url
+    return OAUTH_CLIENT.get_expected_callback_url()
 
 
 # --- Human-like helpers ---
@@ -217,11 +218,11 @@ async def execute_stage_with_retry(stage_name: str, operation, max_attempts: int
     return StageExecutionResult(status="failed", attempts=max_attempts, error=last_error)
 
 
-async def verify_registration_complete(context, email: str):
+async def verify_registration_complete(context, email: str, auth_url: str):
     page = await new_stealth_page(context)
     try:
         print("[OpenAI] Verifying registration on a fresh OAuth page...")
-        await page.goto(OPENAI_OAUTH_URL, wait_until="domcontentloaded")
+        await page.goto(auth_url, wait_until="domcontentloaded")
         await wait_for_selector_with_rate_limit_retry(page, CSS_L_EMAIL, timeout=15000)
         await human_type(page, CSS_L_EMAIL, email)
         await human_click(page, CSS_L_CONTINUE_EMAIL)
@@ -311,13 +312,13 @@ async def submit_verification_code_with_retry(
 
 
 # === Phase 1: Registration ===
-async def openai_register(page, email: str, password: str, access_token: str) -> RegistrationFlowOutcome:
+async def openai_register(page, email: str, password: str, access_token: str, auth_url: str) -> RegistrationFlowOutcome:
     """Register on OpenAI with the supplied credentials."""
     print("[OpenAI] Using password from account file.")
 
     # 1. Go to OAuth page
     print("[OpenAI] Navigating to OAuth page...")
-    await page.goto(OPENAI_OAUTH_URL, wait_until="domcontentloaded")
+    await page.goto(auth_url, wait_until="domcontentloaded")
     await human_delay(2, 4)
 
     # 2. Click "Sign up"
@@ -474,11 +475,11 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
 
 
 # === Phase 2: Second OAuth login + consent ===
-async def openai_second_login(page, email: str, password: str, access_token: str):
+async def openai_second_login(page, email: str, password: str, access_token: str, auth_url: str):
     """After registration, re-visit OAuth URL to login and handle consent."""
     print("[OpenAI] Phase 2: Re-visiting OAuth URL to login...")
 
-    await page.goto(OPENAI_OAUTH_URL, wait_until="domcontentloaded")
+    await page.goto(auth_url, wait_until="domcontentloaded")
     await human_delay(2, 4)
 
     # 1. Enter email
@@ -560,13 +561,14 @@ async def run_registration_stage(account: AccountRecord) -> AccountExecutionResu
         browser, context = await launch_browser_and_context(p)
         try:
             async def registration_operation():
+                auth_url = OAUTH_CLIENT.build_auth_url(OAUTH_CLIENT.create_session())
                 page = await new_stealth_page(context)
                 try:
                     registration_outcome = normalize_registration_flow_outcome(
-                        await openai_register(page, account.email, password, access_token)
+                        await openai_register(page, account.email, password, access_token, auth_url)
                     )
                     if registration_outcome.should_verify_registration:
-                        await verify_registration_complete(context, account.email)
+                        await verify_registration_complete(context, account.email, auth_url)
                     return registration_outcome
                 finally:
                     await close_page_quietly(page)
@@ -621,9 +623,12 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
         try:
             async def login_operation():
                 print("[Main] Starting second OAuth pass...")
+                oauth_session = OAUTH_CLIENT.create_session()
+                auth_url = OAUTH_CLIENT.build_auth_url(oauth_session)
                 page = await new_stealth_page(context)
                 try:
-                    await openai_second_login(page, account.email, password, access_token)
+                    callback_url = await openai_second_login(page, account.email, password, access_token, auth_url)
+                    return callback_url, oauth_session
                 finally:
                     await close_page_quietly(page)
 
@@ -633,6 +638,24 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
 
     overall_status = "success" if login_result.status == "success" else "failed"
     error = login_result.error if login_result.status != "success" else ""
+    if login_result.status == "success":
+        callback_url, oauth_session = login_result.value
+        callback_params = OAUTH_CLIENT.extract_callback_params(callback_url, oauth_session)
+        if not callback_params:
+            overall_status = "failed"
+            error = "Invalid OAuth callback parameters"
+        elif callback_params.get("error"):
+            overall_status = "failed"
+            error = callback_params.get("error_description") or callback_params["error"]
+        elif not callback_params.get("code"):
+            overall_status = "failed"
+            error = "OAuth callback did not include an authorization code"
+        else:
+            try:
+                await OAUTH_CLIENT.exchange_token_and_save(callback_params["code"], account.email, oauth_session)
+            except Exception as exc:
+                overall_status = "failed"
+                error = str(exc)
     if overall_status == "success":
         print("[Main] All done!")
 
@@ -640,7 +663,7 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
         email=account.email,
         password=password,
         registration_status=registration_result.registration_status,
-        login_status=login_result.status,
+        login_status="success" if overall_status == "success" else "failed",
         error_reason=error,
         registration_attempts=registration_result.registration_attempts,
         login_attempts=login_result.attempts,

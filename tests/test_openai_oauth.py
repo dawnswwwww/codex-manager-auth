@@ -1,0 +1,70 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+
+from codex_manager_auth.openai_oauth import OpenAIOAuthClient
+
+
+class OpenAIOAuthClientTests(unittest.IsolatedAsyncioTestCase):
+    def test_build_auth_url_contains_dynamic_pkce_and_redirect_uri(self):
+        client = OpenAIOAuthClient(client_id="client-123", redirect_port=2456, token_output_dir=Path("tokens"))
+        session = client.create_session()
+
+        auth_url = client.build_auth_url(session)
+
+        self.assertIn("client_id=client-123", auth_url)
+        self.assertIn("redirect_uri=http%3A%2F%2Flocalhost%3A2456%2Fauth%2Fcallback", auth_url)
+        self.assertIn(f"state={session.state}", auth_url)
+        self.assertIn(f"code_challenge={session.code_challenge}", auth_url)
+
+    def test_extract_callback_params_returns_code_for_matching_state(self):
+        client = OpenAIOAuthClient(client_id="client-123", redirect_port=2456, token_output_dir=Path("tokens"))
+        session = client.create_session()
+
+        params = client.extract_callback_params(
+            f"{client.redirect_uri}?code=abc123&state={session.state}",
+            session,
+        )
+
+        self.assertIsNotNone(params)
+        self.assertEqual(params["code"], "abc123")
+
+    async def test_exchange_token_and_save_writes_token_file(self):
+        with TemporaryDirectory() as tmpdir:
+            client = OpenAIOAuthClient(
+                client_id="client-123",
+                redirect_port=2456,
+                token_output_dir=Path(tmpdir),
+            )
+            session = client.create_session()
+            response_payload = {
+                "access_token": "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LTEyMyJ9fQ.sig",
+                "expires_in": 3600,
+                "id_token": "id-token",
+                "refresh_token": "refresh-token",
+            }
+
+            class _FakeResponse:
+                status_code = 200
+
+                def json(self):
+                    return response_payload
+
+            class _FakeClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return False
+
+                async def post(self, url, data=None, headers=None):
+                    return _FakeResponse()
+
+            with patch("codex_manager_auth.openai_oauth.httpx.AsyncClient", return_value=_FakeClient()):
+                token_data = await client.exchange_token_and_save("code-123", "user@example.com", session)
+
+            self.assertEqual(token_data["account_id"], "acct-123")
+            token_files = sorted(Path(tmpdir).glob("token_*.json"))
+            self.assertEqual(len(token_files), 1)
+            self.assertIn("user@example.com", token_files[0].read_text(encoding="utf-8"))
