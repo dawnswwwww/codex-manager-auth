@@ -155,6 +155,9 @@ class _FakeOAuthClient:
         assert session is self.session
         return "https://auth.openai.com/oauth/authorize?state=session"
 
+    def get_expected_callback_url(self):
+        return self.redirect_uri
+
     def extract_callback_params(self, callback_url, session):
         assert session is self.session
         if not isinstance(callback_url, str):
@@ -320,9 +323,16 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             app_runner,
             "openai_second_login",
             AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
-        ), patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(app_runner, "OAUTH_CLIENT", oauth_client):
+        ) as login_mock, patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(app_runner, "OAUTH_CLIENT", oauth_client):
             result = await main.run_login_stage(account, registration_result)
 
+        self.assertEqual(login_mock.await_args.args[1:], (
+            "user@example.com",
+            "Secret123000",
+            "access-token",
+            "https://auth.openai.com/oauth/authorize?state=session",
+            oauth_client.redirect_uri,
+        ))
         oauth_client.exchange_token_and_save.assert_awaited_once_with("auth-code", "user@example.com", oauth_client.session)
         self.assertEqual(result.login_status, "success")
 

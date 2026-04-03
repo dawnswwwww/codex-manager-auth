@@ -47,6 +47,9 @@ class _FakeOAuthClient:
         assert session is self.session
         return "https://auth.openai.com/oauth/authorize?state=session"
 
+    def get_expected_callback_url(self):
+        return self.redirect_uri
+
     def extract_callback_params(self, callback_url, session):
         assert session is self.session
         return {"code": "auth-code", "state": "session"}

@@ -133,9 +133,17 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
                 print("[Main] Starting second OAuth pass...")
                 oauth_session = OAUTH_CLIENT.create_session()
                 auth_url = OAUTH_CLIENT.build_auth_url(oauth_session)
+                expected_callback_url = OAUTH_CLIENT.get_expected_callback_url()
                 page = await new_stealth_page(context)
                 try:
-                    callback_url = await openai_second_login(page, account.email, password, access_token, auth_url)
+                    callback_url = await openai_second_login(
+                        page,
+                        account.email,
+                        password,
+                        access_token,
+                        auth_url,
+                        expected_callback_url,
+                    )
                     return callback_url, oauth_session
                 finally:
                     await close_page_quietly(page)
