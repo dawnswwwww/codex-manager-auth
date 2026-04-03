@@ -245,19 +245,14 @@ async def openai_register(page, email: str, access_token: str):
     await human_type(page, CSS_OA_NAME_INPUT, name)
     await human_delay(0.5, 1.0)
 
-    # === DEBUG: Pause at birthday to inspect elements ===
-    await page.screenshot(path="debug_birthday_page.png")
-    dump = await page.evaluate("""() => {
-        return Array.from(document.querySelectorAll('input, button, [role="spinbutton"], [data-type], [aria-label], [contenteditable]')).map(e =>
-            '<' + e.tagName + ' type=' + (e.type||'') + ' name=' + (e.name||'') + ' id=' + (e.id||'') +
-            ' data-type=' + (e.dataset.type||'') + ' role=' + (e.getAttribute('role')||'') +
-            ' placeholder=' + (e.placeholder||'') + ' aria-label=' + (e.getAttribute('aria-label')||'') +
-            ' contenteditable=' + (e.contentEditable||'') + ' text=' + (e.textContent||'').trim().slice(0,30)
-        ).join('\\n');
-    }""")
-    print(f"[Debug] Birthday page elements:\n{dump}")
-    print("[Debug] Screenshot saved to debug_birthday_page.png")
-    input("[Debug] Press Enter to continue...")
+    await page.wait_for_selector(CSS_OA_BIRTHDAY_YEAR, timeout=15000)
+    year_el = page.locator(CSS_OA_BIRTHDAY_YEAR)
+    await year_el.click()
+    await human_delay(0.3, 0.6)
+    await year_el.press("Control+a")
+    await human_delay(0.2, 0.4)
+    await year_el.press_sequentially(year, delay=random.randint(80, 150))
+    await human_delay(0.5, 1.0)
 
     await page.wait_for_selector(CSS_OA_CREATE_ACCOUNT_BTN, timeout=10000)
     await human_click(page, CSS_OA_CREATE_ACCOUNT_BTN)
