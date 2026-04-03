@@ -112,9 +112,13 @@ class OpenAIOAuthClient:
         }
 
         self.token_output_dir.mkdir(parents=True, exist_ok=True)
-        token_path = self.token_output_dir / f"token_{int(now.timestamp() * 1000)}.json"
+        token_path = self.token_output_dir / self.build_token_filename(email)
         token_path.write_text(json.dumps(token_data, indent=2, ensure_ascii=False), encoding="utf-8")
         return token_data
+
+    def build_token_filename(self, email: str) -> str:
+        safe_email = email.replace("/", "_").replace("\\", "_").strip()
+        return f"{safe_email}.json"
 
     def _extract_account_id(self, access_token: str) -> str:
         try:

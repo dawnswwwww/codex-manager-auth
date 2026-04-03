@@ -73,6 +73,6 @@ class OpenAIOAuthClientTests(unittest.IsolatedAsyncioTestCase):
                 token_data = await client.exchange_token_and_save("code-123", "user@example.com", session)
 
             self.assertEqual(token_data["account_id"], "acct-123")
-            token_files = sorted(Path(tmpdir).glob("token_*.json"))
-            self.assertEqual(len(token_files), 1)
-            self.assertIn("user@example.com", token_files[0].read_text(encoding="utf-8"))
+            token_path = Path(tmpdir) / "user@example.com.json"
+            self.assertTrue(token_path.exists())
+            self.assertIn("user@example.com", token_path.read_text(encoding="utf-8"))
