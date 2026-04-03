@@ -1,0 +1,13 @@
+[project]
+name = "codex-manager-auth"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.5",
+    "azure-identity>=1.25.3",
+    "click>=8.3.1",
+    "msgraph-sdk>=1.55.0",
+    "playwright>=1.58.0",
+]
