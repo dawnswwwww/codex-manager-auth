@@ -45,7 +45,7 @@ class _StaticUrlPage:
 
 
 class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_passes_the_account_password_into_both_phases(self):
+    async def test_run_passes_the_normalized_account_password_into_both_phases(self):
         class _RunPage:
             pass
 
@@ -88,8 +88,8 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         ) as login_mock, patch.object(main, "Stealth", return_value=stealth):
             await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
-        self.assertEqual(register_mock.await_args.args[2], "Secret123")
-        self.assertEqual(login_mock.await_args.args[2], "Secret123")
+        self.assertEqual(register_mock.await_args.args[2], "Secret123000")
+        self.assertEqual(login_mock.await_args.args[2], "Secret123000")
 
     async def test_openai_login_flow_raises_when_no_expected_followup_state_is_detected(self):
         page = _LoginFlowPage()

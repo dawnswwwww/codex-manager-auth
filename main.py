@@ -46,6 +46,13 @@ class AccountExecutionResult:
     error: str = ""
 
 
+def normalize_password(password: str) -> str:
+    normalized = password.strip()
+    if len(normalized) < 12:
+        normalized = normalized + "0" * (12 - len(normalized))
+    return normalized
+
+
 def parse_account_line(line: str, line_number: int) -> AccountRecord:
     parts = [part.strip() for part in line.split(ACCOUNT_LINE_SEPARATOR, maxsplit=3)]
     if len(parts) != 4 or any(not part for part in parts):
@@ -543,6 +550,7 @@ async def openai_second_login(page, email: str, password: str, access_token: str
 
 # --- Main ---
 async def run(email: str, password: str, refresh_token: str, client_id: str):
+    password = normalize_password(password)
     try:
         access_token = await exchange_refresh_token(refresh_token, client_id)
     except Exception as exc:

@@ -7,6 +7,13 @@ import main
 
 
 class AccountFileParsingTests(unittest.TestCase):
+    def test_normalize_password_pads_short_password_to_twelve_chars(self):
+        self.assertEqual(main.normalize_password("Secret123"), "Secret123000")
+
+    def test_normalize_password_keeps_password_with_twelve_or_more_chars(self):
+        self.assertEqual(main.normalize_password("Secret123456"), "Secret123456")
+        self.assertEqual(main.normalize_password("Secret123456789"), "Secret123456789")
+
     def test_parse_account_line_returns_structured_account(self):
         account = main.parse_account_line(
             "user@example.com----Secret123----client-1----refresh-1",
