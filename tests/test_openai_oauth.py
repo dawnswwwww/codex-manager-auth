@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from codex_manager_auth.openai_oauth import OpenAIOAuthClient
 
@@ -12,11 +13,18 @@ class OpenAIOAuthClientTests(unittest.IsolatedAsyncioTestCase):
         session = client.create_session()
 
         auth_url = client.build_auth_url(session)
+        query = parse_qs(urlparse(auth_url).query)
 
-        self.assertIn("client_id=client-123", auth_url)
-        self.assertIn("redirect_uri=http%3A%2F%2Flocalhost%3A2456%2Fauth%2Fcallback", auth_url)
-        self.assertIn(f"state={session.state}", auth_url)
-        self.assertIn(f"code_challenge={session.code_challenge}", auth_url)
+        self.assertEqual(query["response_type"], ["code"])
+        self.assertEqual(query["client_id"], ["client-123"])
+        self.assertEqual(query["redirect_uri"], ["http://localhost:2456/auth/callback"])
+        self.assertEqual(query["scope"], ["openid profile email offline_access api.connectors.read api.connectors.invoke"])
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertEqual(query["id_token_add_organizations"], ["true"])
+        self.assertEqual(query["codex_cli_simplified_flow"], ["true"])
+        self.assertEqual(query["originator"], ["codex_cli_rs"])
+        self.assertEqual(query["state"], [session.state])
+        self.assertEqual(query["code_challenge"], [session.code_challenge])
 
     def test_extract_callback_params_returns_code_for_matching_state(self):
         client = OpenAIOAuthClient(client_id="client-123", redirect_port=2456, token_output_dir=Path("tokens"))

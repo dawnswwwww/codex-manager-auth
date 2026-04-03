@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import main
+from codex_manager_auth import openai_flows
 
 
 class FakeLocator:
@@ -62,11 +63,11 @@ class SubmitVerificationCodeTests(unittest.IsolatedAsyncioTestCase):
         page = FakePage(main.CSS_INVALID_CODE_ERROR)
 
         with patch.object(
-            main,
+            openai_flows,
             "fetch_verification_code",
             AsyncMock(side_effect=["111111", "222222"]),
-        ) as fetch_mock, patch.object(main, "human_type", AsyncMock()) as type_mock, patch.object(
-            main, "human_delay", AsyncMock()
+        ) as fetch_mock, patch.object(openai_flows, "human_type", AsyncMock()) as type_mock, patch.object(
+            openai_flows, "human_delay", AsyncMock()
         ):
             final_code = await main.submit_verification_code_with_retry(
                 page=page,
@@ -93,12 +94,12 @@ class SubmitVerificationCodeTests(unittest.IsolatedAsyncioTestCase):
             await page.locator(selector).click()
 
         with patch.object(
-            main,
+            openai_flows,
             "fetch_verification_code",
             AsyncMock(side_effect=["333333", "444444"]),
-        ) as fetch_mock, patch.object(main, "human_type", AsyncMock()), patch.object(
-            main, "human_delay", AsyncMock()
-        ), patch.object(main, "human_click", AsyncMock(side_effect=fake_human_click)) as click_mock:
+        ) as fetch_mock, patch.object(openai_flows, "human_type", AsyncMock()), patch.object(
+            openai_flows, "human_delay", AsyncMock()
+        ), patch.object(openai_flows, "human_click", AsyncMock(side_effect=fake_human_click)) as click_mock:
             final_code = await main.submit_verification_code_with_retry(
                 page=page,
                 selector=main.CSS_L_CODE,

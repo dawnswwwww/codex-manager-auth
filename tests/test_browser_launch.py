@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import main
+from codex_manager_auth import playwright_helpers
 
 
 class _FakePage:
@@ -71,7 +72,7 @@ class BrowserLaunchTests(unittest.IsolatedAsyncioTestCase):
             main,
             "openai_second_login",
             AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
-        ), patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
+        ), patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
             await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
         launch_kwargs = playwright_manager.chromium.launch.await_args.kwargs

@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import main
+from codex_manager_auth import openai_flows
+from codex_manager_auth import playwright_helpers
 
 
 class _NeverVisibleLocator:
@@ -211,7 +213,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             main,
             "openai_second_login",
             AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
-        ) as login_mock, patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
+        ) as login_mock, patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
             result = await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
         verify_mock.assert_not_awaited()
@@ -260,7 +262,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             main,
             "openai_second_login",
             AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
-        ) as login_mock, patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
+        ) as login_mock, patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
             await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
         self.assertEqual(register_mock.await_args.args[2], "Secret123000")
@@ -317,7 +319,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             main,
             "openai_second_login",
             AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
-        ), patch.object(main, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
+        ), patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
             result = await main.run_login_stage(account, registration_result)
 
         oauth_client.exchange_token_and_save.assert_awaited_once_with("auth-code", "user@example.com", oauth_client.session)
@@ -326,11 +328,11 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
     async def test_openai_login_flow_raises_when_no_expected_followup_state_is_detected(self):
         page = _LoginFlowPage()
 
-        with patch.object(main, "human_type", AsyncMock()), patch.object(
-            main,
+        with patch.object(openai_flows, "human_type", AsyncMock()), patch.object(
+            openai_flows,
             "human_click",
             AsyncMock(),
-        ), patch.object(main, "human_delay", AsyncMock()):
+        ), patch.object(openai_flows, "human_delay", AsyncMock()):
             with self.assertRaisesRegex(RuntimeError, "Login flow"):
                 await main.openai_login_flow(page, "user@example.com", "Secret123", "token")
 
@@ -368,7 +370,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
     async def test_wait_for_selector_with_rate_limit_retry_clicks_retry_and_retries(self):
         page = _RateLimitPage()
 
-        with patch.object(main, "human_delay", AsyncMock()):
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
             await main.wait_for_selector_with_rate_limit_retry(page, "input[name='email']", timeout=1)
 
         self.assertEqual(page.retry_clicks, 1)
@@ -401,7 +403,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        with patch.object(main, "human_delay", AsyncMock()):
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
             await main.fill_profile_age(page, "CroffMost", "32", "1994")
 
         self.assertEqual(
