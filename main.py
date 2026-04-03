@@ -44,6 +44,12 @@ class RegistrationFlowOutcome:
 
 
 @dataclass(frozen=True)
+class PageTerminalState:
+    status: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class StageExecutionResult:
     status: str
     attempts: int
@@ -61,6 +67,10 @@ class AccountExecutionResult:
     registration_attempts: int = 0
     login_attempts: int = 0
     overall_status: str = ""
+
+
+class NonRetryableStageError(RuntimeError):
+    pass
 
 
 def normalize_password(password: str) -> str:
@@ -316,6 +326,10 @@ RATE_LIMIT_RETRY_BUTTON_SELECTORS = (
     'button:has-text("重试")',
     'button:has-text("Retry")',
 )
+ADD_PHONE_URL_KEYWORDS = (
+    "auth.openai.com/add-phone",
+    "/add-phone",
+)
 
 
 # --- Human-like helpers ---
@@ -376,16 +390,51 @@ async def retry_rate_limit_error_page(page) -> bool:
     return True
 
 
+def get_hard_failure_reason_from_url(url: str) -> str | None:
+    normalized_url = (url or "").lower()
+    for keyword in ADD_PHONE_URL_KEYWORDS:
+        if keyword in normalized_url:
+            return "OpenAI required a phone number on the add-phone page"
+    return None
+
+
+async def get_hard_failure_reason(page) -> str | None:
+    return get_hard_failure_reason_from_url(getattr(page, "url", ""))
+
+
+async def raise_for_hard_failure_page(page):
+    reason = await get_hard_failure_reason(page)
+    if reason:
+        raise NonRetryableStageError(reason)
+
+
+async def get_login_terminal_state(page) -> PageTerminalState | None:
+    if page.url.startswith(get_expected_callback_url()):
+        return PageTerminalState(status="callback", detail=page.url)
+
+    reason = await get_hard_failure_reason(page)
+    if reason:
+        return PageTerminalState(status="hard_failure", detail=reason)
+
+    if await is_selector_visible(page, CSS_L_CONSENT_BTN):
+        return PageTerminalState(status="consent", detail=page.url)
+
+    return None
+
+
 async def wait_for_selector_with_rate_limit_retry(page, selector: str, timeout: int = 15000):
+    await raise_for_hard_failure_page(page)
     retried_rate_limit = await retry_rate_limit_error_page(page)
 
     try:
         return await page.wait_for_selector(selector, timeout=timeout)
     except Exception:
+        await raise_for_hard_failure_page(page)
         if not retried_rate_limit:
             retried_rate_limit = await retry_rate_limit_error_page(page)
         if not retried_rate_limit:
             raise
+        await raise_for_hard_failure_page(page)
         return await page.wait_for_selector(selector, timeout=timeout)
 
 
@@ -396,6 +445,7 @@ async def wait_for_callback_url(page, timeout_s: float = 15.0, poll_interval_s: 
     while time.monotonic() <= deadline:
         if page.url.startswith(expected_callback_url):
             return page.url
+        await raise_for_hard_failure_page(page)
         await asyncio.sleep(poll_interval_s)
 
     raise RuntimeError(f"OAuth callback was not reached within {timeout_s:.1f}s")
@@ -408,6 +458,9 @@ async def execute_stage_with_retry(stage_name: str, operation, max_attempts: int
         try:
             value = await operation()
             return StageExecutionResult(status="success", attempts=attempt, value=value)
+        except NonRetryableStageError as exc:
+            print(f"[{stage_name}] Non-retryable failure: {exc}")
+            return StageExecutionResult(status="failed", attempts=attempt, error=str(exc))
         except Exception as exc:
             last_error = str(exc)
             print(f"[{stage_name}] Attempt {attempt}/{max_attempts} failed: {last_error}")
@@ -621,6 +674,13 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
     completed = False
 
     for _ in range(3):
+        terminal_state = await get_login_terminal_state(page)
+        if terminal_state:
+            if terminal_state.status == "hard_failure":
+                raise NonRetryableStageError(terminal_state.detail)
+            completed = True
+            break
+
         code_el = page.locator('input[name="code"]')
         name_el = page.locator('input[name="name"]')
         birthday_el = page.locator('[data-type="year"]')
@@ -651,10 +711,6 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
                 break
         except Exception:
             pass
-
-        if page.url.startswith(get_expected_callback_url()) or await is_selector_visible(page, CSS_L_CONSENT_BTN):
-            completed = True
-            break
 
         if await retry_rate_limit_error_page(page):
             continue

@@ -44,6 +44,17 @@ class _StaticUrlPage:
         self.url = url
 
 
+class _HardFailurePage:
+    def __init__(self, url="https://auth.openai.com/add-phone"):
+        self.url = url
+
+    def locator(self, selector):
+        return _NeverVisibleLocator()
+
+    async def wait_for_selector(self, selector, timeout=None):
+        raise RuntimeError("timeout waiting for selector")
+
+
 class _ProfileLocator:
     def __init__(self, page, selector):
         self.page = page
@@ -250,10 +261,26 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.attempts, 2)
         self.assertEqual(operation.await_count, 2)
 
+    async def test_execute_stage_with_retry_stops_immediately_for_non_retryable_errors(self):
+        operation = AsyncMock(side_effect=main.NonRetryableStageError("phone required"))
+
+        result = await main.execute_stage_with_retry("registration", operation, max_attempts=3)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(result.error, "phone required")
+        self.assertEqual(operation.await_count, 1)
+
     async def test_wait_for_callback_url_raises_when_redirect_never_arrives(self):
         page = _StaticUrlPage("https://auth.openai.com/authorize")
 
         with self.assertRaisesRegex(RuntimeError, "callback"):
+            await main.wait_for_callback_url(page, timeout_s=0.01, poll_interval_s=0.0)
+
+    async def test_wait_for_callback_url_raises_immediately_for_hard_failure_pages(self):
+        page = _HardFailurePage()
+
+        with self.assertRaisesRegex(main.NonRetryableStageError, "phone number"):
             await main.wait_for_callback_url(page, timeout_s=0.01, poll_interval_s=0.0)
 
     async def test_wait_for_selector_with_rate_limit_retry_clicks_retry_and_retries(self):
@@ -264,6 +291,24 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(page.retry_clicks, 1)
         self.assertEqual(page.wait_attempts, 2)
+
+    async def test_wait_for_selector_with_rate_limit_retry_raises_for_hard_failure_pages(self):
+        page = _HardFailurePage()
+
+        with self.assertRaisesRegex(main.NonRetryableStageError, "phone number"):
+            await main.wait_for_selector_with_rate_limit_retry(page, "input[name='email']", timeout=1)
+
+    async def test_get_login_terminal_state_detects_callback_and_hard_failure_pages(self):
+        callback_page = _StaticUrlPage(f"{main.get_expected_callback_url()}?code=ok")
+        hard_failure_page = _HardFailurePage()
+
+        callback_state = await main.get_login_terminal_state(callback_page)
+        hard_failure_state = await main.get_login_terminal_state(hard_failure_page)
+
+        self.assertEqual(callback_state.status, "callback")
+        self.assertIn("code=ok", callback_state.detail)
+        self.assertEqual(hard_failure_state.status, "hard_failure")
+        self.assertIn("phone number", hard_failure_state.detail)
 
     async def test_fill_profile_age_uses_age_input_when_year_input_is_missing(self):
         page = _ProfilePage(
