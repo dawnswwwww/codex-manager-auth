@@ -289,13 +289,13 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CsvResultTests(unittest.TestCase):
-    def test_append_account_result_rejects_non_result_objects(self):
+    def test_upsert_account_result_rejects_non_result_objects(self):
         with TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "results.csv"
             with self.assertRaisesRegex(TypeError, "AccountExecutionResult"):
-                main.append_account_result(csv_path, object())
+                main.upsert_account_result(csv_path, object())
 
-    def test_append_account_result_writes_header_and_row(self):
+    def test_upsert_account_result_writes_header_and_row(self):
         result = main.AccountExecutionResult(
             email="user@example.com",
             password="Secret123000",
@@ -306,7 +306,7 @@ class CsvResultTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "results.csv"
-            main.append_account_result(csv_path, result)
+            main.upsert_account_result(csv_path, result)
 
             content = csv_path.read_text(encoding="utf-8").splitlines()
 
@@ -315,5 +315,36 @@ class CsvResultTests(unittest.TestCase):
             [
                 "email,password,registration_status,login_status,error_reason",
                 "user@example.com,Secret123000,success,failed,consent callback not reached | Call log: | - waiting for selector",
+            ],
+        )
+
+    def test_upsert_account_result_rewrites_existing_row_instead_of_appending_duplicate(self):
+        original = main.AccountExecutionResult(
+            email="user@example.com",
+            password="Secret123000",
+            registration_status="success",
+            login_status="pending",
+            error_reason="",
+        )
+        updated = main.AccountExecutionResult(
+            email="user@example.com",
+            password="Secret123000",
+            registration_status="success",
+            login_status="success",
+            error_reason="",
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "results.csv"
+            main.upsert_account_result(csv_path, original)
+            main.upsert_account_result(csv_path, updated)
+
+            content = csv_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(
+            content,
+            [
+                "email,password,registration_status,login_status,error_reason",
+                "user@example.com,Secret123000,success,success,",
             ],
         )

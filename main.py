@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import random
 import re
+import tempfile
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -18,6 +19,14 @@ ACCOUNT_FILE = APP_CONFIG.account_file
 ACCOUNT_LINE_SEPARATOR = "----"
 MAX_STAGE_ATTEMPTS = 3
 RESULTS_DIR = Path(__file__).with_name("results")
+RESULT_CSV_HEADERS = (
+    "email",
+    "password",
+    "registration_status",
+    "login_status",
+    "error_reason",
+)
+LOGIN_ELIGIBLE_REGISTRATION_STATUSES = {"success", "already_exists"}
 
 
 @dataclass(frozen=True)
@@ -106,33 +115,100 @@ def normalize_csv_field(value) -> str:
     return " | ".join(parts)
 
 
-def append_account_result(csv_path: Path, result: AccountExecutionResult):
-    if not isinstance(result, AccountExecutionResult):
-        raise TypeError(f"append_account_result expects AccountExecutionResult, got {type(result).__name__}")
+def create_pending_account_result(account: AccountRecord) -> AccountExecutionResult:
+    return AccountExecutionResult(
+        email=account.email,
+        password=normalize_password(account.password),
+        registration_status="pending",
+        login_status="pending",
+        error_reason="",
+        overall_status="pending",
+    )
 
+
+def build_account_index(accounts: list[AccountRecord]) -> dict[str, AccountRecord]:
+    index: dict[str, AccountRecord] = {}
+    for account in accounts:
+        if account.email in index:
+            raise ValueError(f"Duplicate account email in account file: {account.email}")
+        index[account.email] = account
+    return index
+
+
+def load_account_results(csv_path: Path) -> list[AccountExecutionResult]:
+    if not csv_path.exists():
+        return []
+
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = reader.fieldnames or []
+        missing_headers = [header for header in RESULT_CSV_HEADERS if header not in fieldnames]
+        if missing_headers:
+            raise ValueError(f"Results CSV is missing headers: {', '.join(missing_headers)}")
+
+        results: list[AccountExecutionResult] = []
+        for row in reader:
+            if not row:
+                continue
+            results.append(
+                AccountExecutionResult(
+                    email=(row.get("email") or "").strip(),
+                    password=(row.get("password") or "").strip(),
+                    registration_status=(row.get("registration_status") or "").strip(),
+                    login_status=(row.get("login_status") or "").strip(),
+                    error_reason=(row.get("error_reason") or "").strip(),
+                )
+            )
+        return results
+
+
+def write_account_results_atomic(csv_path: Path, results: list[AccountExecutionResult]):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not csv_path.exists()
-    with csv_path.open("a", encoding="utf-8", newline="") as fh:
-        writer = csv.writer(fh)
-        if write_header:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=csv_path.parent,
+        prefix=f"{csv_path.stem}_",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp_file:
+        writer = csv.writer(tmp_file)
+        writer.writerow(list(RESULT_CSV_HEADERS))
+        for result in results:
+            if not isinstance(result, AccountExecutionResult):
+                raise TypeError(
+                    f"write_account_results_atomic expects AccountExecutionResult, got {type(result).__name__}"
+                )
             writer.writerow(
                 [
-                    "email",
-                    "password",
-                    "registration_status",
-                    "login_status",
-                    "error_reason",
+                    normalize_csv_field(result.email),
+                    normalize_csv_field(result.password),
+                    normalize_csv_field(result.registration_status),
+                    normalize_csv_field(result.login_status),
+                    normalize_csv_field(result.error_reason),
                 ]
             )
-        writer.writerow(
-            [
-                normalize_csv_field(result.email),
-                normalize_csv_field(result.password),
-                normalize_csv_field(result.registration_status),
-                normalize_csv_field(result.login_status),
-                normalize_csv_field(result.error_reason),
-            ]
-        )
+        tmp_path = Path(tmp_file.name)
+
+    tmp_path.replace(csv_path)
+
+
+def upsert_account_result(csv_path: Path, result: AccountExecutionResult):
+    if not isinstance(result, AccountExecutionResult):
+        raise TypeError(f"upsert_account_result expects AccountExecutionResult, got {type(result).__name__}")
+
+    results = load_account_results(csv_path)
+    updated = False
+    for index, existing in enumerate(results):
+        if existing.email == result.email:
+            results[index] = result
+            updated = True
+            break
+    if not updated:
+        results.append(result)
+
+    write_account_results_atomic(csv_path, results)
 
 
 def get_expected_callback_url() -> str:
@@ -627,16 +703,39 @@ async def openai_second_login(page, email: str, password: str, access_token: str
     return callback_url
 
 
-# --- Main ---
-async def run(email: str, password: str, refresh_token: str, client_id: str):
-    password = normalize_password(password)
+async def launch_browser_and_context(playwright_manager):
+    browser = await playwright_manager.chromium.launch(
+        headless=False,
+        args=[
+            '--incognito',
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+        ],
+    )
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        viewport={"width": 1440, "height": 900},
+        locale="zh-CN",
+    )
+    return browser, context
+
+
+def should_attempt_login(result: AccountExecutionResult) -> bool:
+    return (
+        result.registration_status in LOGIN_ELIGIBLE_REGISTRATION_STATUSES
+        and result.login_status != "success"
+    )
+
+
+async def run_registration_stage(account: AccountRecord) -> AccountExecutionResult:
+    password = normalize_password(account.password)
     try:
-        access_token = await exchange_refresh_token(refresh_token, client_id)
+        access_token = await exchange_refresh_token(account.refresh_token, account.client_id)
     except Exception as exc:
         return AccountExecutionResult(
-            email=email,
+            email=account.email,
             password=password,
-            registration_status="skipped",
+            registration_status="failed",
             login_status="skipped",
             error_reason=str(exc),
             registration_attempts=0,
@@ -645,90 +744,137 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
         )
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=False,
-            args=[
-                '--incognito',
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-            ],
-        )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            viewport={"width": 1440, "height": 900},
-            locale="zh-CN",
-        )
+        browser, context = await launch_browser_and_context(p)
         try:
             async def registration_operation():
                 page = await new_stealth_page(context)
                 try:
                     registration_outcome = normalize_registration_flow_outcome(
-                        await openai_register(page, email, password, access_token)
+                        await openai_register(page, account.email, password, access_token)
                     )
                     if registration_outcome.should_verify_registration:
-                        await verify_registration_complete(context, email)
+                        await verify_registration_complete(context, account.email)
                     return registration_outcome
                 finally:
                     await close_page_quietly(page)
 
             registration_result = await execute_stage_with_retry("registration", registration_operation)
-            if registration_result.status != "success":
-                return AccountExecutionResult(
-                    email=email,
-                    password=password,
-                    registration_status="failed",
-                    login_status="skipped",
-                    error_reason=registration_result.error,
-                    registration_attempts=registration_result.attempts,
-                    login_attempts=0,
-                    overall_status="failed",
-                )
+        finally:
+            await browser.close()
 
-            registration_outcome = normalize_registration_flow_outcome(registration_result.value)
-            print("[Main] Registration done.")
+    if registration_result.status != "success":
+        return AccountExecutionResult(
+            email=account.email,
+            password=password,
+            registration_status="failed",
+            login_status="skipped",
+            error_reason=registration_result.error,
+            registration_attempts=registration_result.attempts,
+            login_attempts=0,
+            overall_status="failed",
+        )
 
+    registration_outcome = normalize_registration_flow_outcome(registration_result.value)
+    return AccountExecutionResult(
+        email=account.email,
+        password=password,
+        registration_status=registration_outcome.registration_status,
+        login_status="pending",
+        error_reason="",
+        registration_attempts=registration_result.attempts,
+        login_attempts=0,
+        overall_status="pending",
+    )
+
+
+async def run_login_stage(account: AccountRecord, registration_result: AccountExecutionResult) -> AccountExecutionResult:
+    password = normalize_password(account.password)
+    try:
+        access_token = await exchange_refresh_token(account.refresh_token, account.client_id)
+    except Exception as exc:
+        return AccountExecutionResult(
+            email=account.email,
+            password=password,
+            registration_status=registration_result.registration_status,
+            login_status="failed",
+            error_reason=str(exc),
+            registration_attempts=registration_result.registration_attempts,
+            login_attempts=0,
+            overall_status="failed",
+        )
+
+    async with async_playwright() as p:
+        browser, context = await launch_browser_and_context(p)
+        try:
             async def login_operation():
                 print("[Main] Starting second OAuth pass...")
                 page = await new_stealth_page(context)
                 try:
-                    await openai_second_login(page, email, password, access_token)
+                    await openai_second_login(page, account.email, password, access_token)
                 finally:
                     await close_page_quietly(page)
 
             login_result = await execute_stage_with_retry("login", login_operation)
-            overall_status = "success" if login_result.status == "success" else "failed"
-            error = login_result.error if login_result.status != "success" else ""
-            if overall_status == "success":
-                print("[Main] All done!")
-
-            return AccountExecutionResult(
-                email=email,
-                password=password,
-                registration_status=registration_outcome.registration_status,
-                login_status=login_result.status,
-                error_reason=error,
-                registration_attempts=registration_result.attempts,
-                login_attempts=login_result.attempts,
-                overall_status=overall_status,
-            )
         finally:
             await browser.close()
+
+    overall_status = "success" if login_result.status == "success" else "failed"
+    error = login_result.error if login_result.status != "success" else ""
+    if overall_status == "success":
+        print("[Main] All done!")
+
+    return AccountExecutionResult(
+        email=account.email,
+        password=password,
+        registration_status=registration_result.registration_status,
+        login_status=login_result.status,
+        error_reason=error,
+        registration_attempts=registration_result.registration_attempts,
+        login_attempts=login_result.attempts,
+        overall_status=overall_status,
+    )
+
+
+# --- Main ---
+async def run(email: str, password: str, refresh_token: str, client_id: str):
+    account = AccountRecord(
+        email=email,
+        password=password,
+        client_id=client_id,
+        refresh_token=refresh_token,
+    )
+    registration_result = await run_registration_stage(account)
+    if not should_attempt_login(registration_result):
+        return registration_result
+
+    print("[Main] Registration done.")
+    return await run_login_stage(account, registration_result)
 
 
 async def run_accounts(accounts_file: Path):
     accounts = load_accounts(accounts_file)
+    account_index = build_account_index(accounts)
     csv_path = build_results_csv_path()
+    initial_results = [create_pending_account_result(account) for account in accounts]
+    write_account_results_atomic(csv_path, initial_results)
     print(f"[Main] Loaded {len(accounts)} account(s) from {accounts_file}")
     print(f"[Main] Writing execution results to {csv_path}")
-    for index, account in enumerate(accounts, start=1):
-        print(f"[Main] Processing account {index}/{len(accounts)}: {account.email}")
-        result = await run(
-            email=account.email,
-            password=account.password,
-            refresh_token=account.refresh_token,
-            client_id=account.client_id,
-        )
-        append_account_result(csv_path, result)
+
+    registration_rows = load_account_results(csv_path)
+    for index, row in enumerate(registration_rows, start=1):
+        account = account_index[row.email]
+        print(f"[Main] Registration phase account {index}/{len(registration_rows)}: {account.email}")
+        registration_result = await run_registration_stage(account)
+        upsert_account_result(csv_path, registration_result)
+
+    login_rows = load_account_results(csv_path)
+    eligible_login_rows = [row for row in login_rows if should_attempt_login(row)]
+    print(f"[Main] Login phase will process {len(eligible_login_rows)} account(s) from CSV.")
+    for index, row in enumerate(eligible_login_rows, start=1):
+        account = account_index[row.email]
+        print(f"[Main] Login phase account {index}/{len(eligible_login_rows)}: {account.email}")
+        login_result = await run_login_stage(account, row)
+        upsert_account_result(csv_path, login_result)
 
     return csv_path
 

@@ -52,7 +52,7 @@ class AccountFileParsingTests(unittest.TestCase):
 
 
 class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_accounts_processes_each_account_in_order(self):
+    async def test_run_accounts_registers_all_accounts_then_logs_in_eligible_rows_from_csv(self):
         accounts = [
             main.AccountRecord(
                 email="alpha@example.com",
@@ -68,49 +68,55 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
 
-        account_result = main.AccountExecutionResult(
-            email="alpha@example.com",
-            password="Alpha123000",
-            registration_status="success",
-            login_status="success",
-            error_reason="",
-        )
-
-        with patch.object(main, "load_accounts", return_value=accounts), patch.object(
-            main,
-            "run",
-            AsyncMock(side_effect=[
-                account_result,
-                main.AccountExecutionResult(
-                    email="beta@example.com",
-                    password="Beta123000",
-                    registration_status="success",
-                    login_status="success",
-                    error_reason="",
+        with TemporaryDirectory() as tmpdir:
+            expected_csv_path = Path(tmpdir) / "results.csv"
+            with patch.object(main, "load_accounts", return_value=accounts), patch.object(
+                main,
+                "run_registration_stage",
+                AsyncMock(side_effect=[
+                    main.AccountExecutionResult(
+                        email="alpha@example.com",
+                        password="Alpha123000",
+                        registration_status="success",
+                        login_status="pending",
+                        error_reason="",
+                    ),
+                    main.AccountExecutionResult(
+                        email="beta@example.com",
+                        password="Beta123000",
+                        registration_status="failed",
+                        login_status="skipped",
+                        error_reason="",
+                    ),
+                ]),
+            ) as registration_mock, patch.object(
+                main,
+                "run_login_stage",
+                AsyncMock(
+                    return_value=main.AccountExecutionResult(
+                        email="alpha@example.com",
+                        password="Alpha123000",
+                        registration_status="success",
+                        login_status="success",
+                        error_reason="",
+                    )
                 ),
-            ]),
-        ) as run_mock, patch.object(
-            main,
-            "build_results_csv_path",
-            return_value=Path("results.csv"),
-        ), patch.object(main, "append_account_result") as append_mock:
-            await main.run_accounts(Path("accounts.txt"))
+            ) as login_mock, patch.object(
+                main,
+                "build_results_csv_path",
+                return_value=expected_csv_path,
+            ):
+                csv_path = await main.run_accounts(Path("accounts.txt"))
 
         self.assertEqual(
-            run_mock.await_args_list,
+            registration_mock.await_args_list,
             [
-                call(
-                    email="alpha@example.com",
-                    password="Alpha123",
-                    refresh_token="refresh-a",
-                    client_id="client-a",
-                ),
-                call(
-                    email="beta@example.com",
-                    password="Beta123",
-                    refresh_token="refresh-b",
-                    client_id="client-b",
-                ),
+                call(accounts[0]),
+                call(accounts[1]),
             ],
         )
-        self.assertEqual(append_mock.call_count, 2)
+        login_mock.assert_awaited_once()
+        self.assertEqual(login_mock.await_args.args[0], accounts[0])
+        self.assertEqual(login_mock.await_args.args[1].email, "alpha@example.com")
+        self.assertEqual(login_mock.await_args.args[1].registration_status, "success")
+        self.assertEqual(csv_path, expected_csv_path)
