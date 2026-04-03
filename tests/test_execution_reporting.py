@@ -127,6 +127,63 @@ class _RateLimitPage:
 
 
 class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_skips_registration_verification_when_account_already_exists(self):
+        class _RunPage:
+            pass
+
+        class _RunContext:
+            def __init__(self):
+                self.new_page = AsyncMock(side_effect=[_RunPage(), _RunPage()])
+
+        class _RunBrowser:
+            def __init__(self, context):
+                self.new_context = AsyncMock(return_value=context)
+                self.close = AsyncMock()
+
+        class _RunPlaywrightManager:
+            def __init__(self, browser):
+                self.chromium = type("Chromium", (), {"launch": AsyncMock(return_value=browser)})()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        context = _RunContext()
+        browser = _RunBrowser(context)
+        playwright_manager = _RunPlaywrightManager(browser)
+        stealth = type("StealthStub", (), {"apply_stealth_async": AsyncMock()})()
+
+        with patch.object(main, "async_playwright", return_value=playwright_manager), patch.object(
+            main,
+            "exchange_refresh_token",
+            AsyncMock(return_value="access-token"),
+        ), patch.object(
+            main,
+            "openai_register",
+            AsyncMock(
+                return_value=main.RegistrationFlowOutcome(
+                    registration_status="already_exists",
+                    should_verify_registration=False,
+                )
+            ),
+        ), patch.object(
+            main,
+            "verify_registration_complete",
+            AsyncMock(),
+        ) as verify_mock, patch.object(
+            main,
+            "openai_second_login",
+            AsyncMock(),
+        ) as login_mock, patch.object(main, "Stealth", return_value=stealth):
+            result = await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
+
+        verify_mock.assert_not_awaited()
+        login_mock.assert_awaited_once()
+        self.assertEqual(result.registration_status, "already_exists")
+        self.assertEqual(result.login_status, "success")
+
     async def test_run_passes_the_normalized_account_password_into_both_phases(self):
         class _RunPage:
             pass

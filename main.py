@@ -29,10 +29,17 @@ class AccountRecord:
 
 
 @dataclass(frozen=True)
+class RegistrationFlowOutcome:
+    registration_status: str
+    should_verify_registration: bool = True
+
+
+@dataclass(frozen=True)
 class StageExecutionResult:
     status: str
     attempts: int
     error: str = ""
+    value: object | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +59,12 @@ def normalize_password(password: str) -> str:
     if len(normalized) < 12:
         normalized = normalized + "0" * (12 - len(normalized))
     return normalized
+
+
+def normalize_registration_flow_outcome(value) -> RegistrationFlowOutcome:
+    if isinstance(value, RegistrationFlowOutcome):
+        return value
+    return RegistrationFlowOutcome(registration_status="success", should_verify_registration=True)
 
 
 def parse_account_line(line: str, line_number: int) -> AccountRecord:
@@ -309,8 +322,8 @@ async def execute_stage_with_retry(stage_name: str, operation, max_attempts: int
 
     for attempt in range(1, max_attempts + 1):
         try:
-            await operation()
-            return StageExecutionResult(status="success", attempts=attempt)
+            value = await operation()
+            return StageExecutionResult(status="success", attempts=attempt, value=value)
         except Exception as exc:
             last_error = str(exc)
             print(f"[{stage_name}] Attempt {attempt}/{max_attempts} failed: {last_error}")
@@ -412,7 +425,7 @@ async def submit_verification_code_with_retry(
 
 
 # === Phase 1: Registration ===
-async def openai_register(page, email: str, password: str, access_token: str):
+async def openai_register(page, email: str, password: str, access_token: str) -> RegistrationFlowOutcome:
     """Register on OpenAI with the supplied credentials."""
     print("[OpenAI] Using password from account file.")
 
@@ -456,11 +469,11 @@ async def openai_register(page, email: str, password: str, access_token: str):
     try:
         error_el = page.locator(CSS_OA_ACCOUNT_EXISTS_ERROR)
         if await error_el.count() > 0 and await error_el.first.is_visible():
-            print("[OpenAI] Account already exists! Switching to login flow...")
-            await page.goto("https://auth.openai.com/log-in", wait_until="domcontentloaded")
-            await human_delay(2, 4)
-            await openai_login_flow(page, email, password, access_token)
-            return
+            print("[OpenAI] Account already exists. Skipping registration verification and handing off to login stage.")
+            return RegistrationFlowOutcome(
+                registration_status="already_exists",
+                should_verify_registration=False,
+            )
     except Exception:
         pass
 
@@ -494,6 +507,7 @@ async def openai_register(page, email: str, password: str, access_token: str):
     await human_click(page, CSS_OA_CREATE_ACCOUNT_BTN)
     await human_delay(3, 5)
     print("[OpenAI] Registration phase complete.")
+    return RegistrationFlowOutcome(registration_status="success", should_verify_registration=True)
 
 
 # === Login flow (when account already exists) ===
@@ -648,8 +662,12 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
             async def registration_operation():
                 page = await new_stealth_page(context)
                 try:
-                    await openai_register(page, email, password, access_token)
-                    await verify_registration_complete(context, email)
+                    registration_outcome = normalize_registration_flow_outcome(
+                        await openai_register(page, email, password, access_token)
+                    )
+                    if registration_outcome.should_verify_registration:
+                        await verify_registration_complete(context, email)
+                    return registration_outcome
                 finally:
                     await close_page_quietly(page)
 
@@ -666,6 +684,7 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
                     overall_status="failed",
                 )
 
+            registration_outcome = normalize_registration_flow_outcome(registration_result.value)
             print("[Main] Registration done.")
 
             async def login_operation():
@@ -685,7 +704,7 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
             return AccountExecutionResult(
                 email=email,
                 password=password,
-                registration_status="success",
+                registration_status=registration_outcome.registration_status,
                 login_status=login_result.status,
                 error_reason=error,
                 registration_attempts=registration_result.attempts,
