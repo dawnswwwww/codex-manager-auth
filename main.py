@@ -4,12 +4,13 @@ from pathlib import Path
 import random
 import re
 
+from app_config import APP_CONFIG
 import httpx
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
 
-ACCOUNT_FILE = Path(__file__).with_name("宝贝信息-751260402124217622.txt")
+ACCOUNT_FILE = APP_CONFIG.account_file
 ACCOUNT_LINE_SEPARATOR = "----"
 
 
@@ -103,20 +104,7 @@ async def fetch_verification_code(access_token: str, max_retries: int = 10, inte
     raise RuntimeError("Failed to find verification code after max retries")
 
 
-# --- OpenAI OAuth URL ---
-OPENAI_OAUTH_URL = (
-    "https://auth.openai.com/oauth/authorize"
-    "?response_type=code"
-    "&client_id=app_EMoamEEZ73f0CkXaXp7hrann"
-    "&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
-    "&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke"
-    "&code_challenge=eIqXnpzcbqDoJMEQ0wfICGkVjCN3xImfz1qsLTygoSE"
-    "&code_challenge_method=S256"
-    "&id_token_add_organizations=true"
-    "&codex_cli_simplified_flow=true"
-    "&state=-Xfx2Gr4g51W52DY1dR1Rqrx6SawslWkl-9kJ-tWMDI"
-    "&originator=codex_cli_rs"
-)
+OPENAI_OAUTH_URL = APP_CONFIG.openai_oauth_url
 
 # --- Phase 1: Registration selectors ---
 CSS_OA_SIGNUP_LINK = 'a[href*="create-account"]'
