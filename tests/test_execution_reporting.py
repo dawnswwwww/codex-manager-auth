@@ -168,6 +168,12 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CsvResultTests(unittest.TestCase):
+    def test_append_account_result_rejects_non_result_objects(self):
+        with TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "results.csv"
+            with self.assertRaisesRegex(TypeError, "AccountExecutionResult"):
+                main.append_account_result(csv_path, object())
+
     def test_append_account_result_writes_header_and_row(self):
         result = main.AccountExecutionResult(
             email="user@example.com",
@@ -176,7 +182,7 @@ class CsvResultTests(unittest.TestCase):
             login_status="failed",
             login_attempts=3,
             overall_status="failed",
-            error="consent callback not reached",
+            error="consent callback not reached\nCall log:\n  - waiting for selector",
         )
 
         with TemporaryDirectory() as tmpdir:
@@ -189,6 +195,6 @@ class CsvResultTests(unittest.TestCase):
             content,
             [
                 "email,registration_status,registration_attempts,login_status,login_attempts,overall_status,error",
-                "user@example.com,success,2,failed,3,failed,consent callback not reached",
+                "user@example.com,success,2,failed,3,failed,consent callback not reached | Call log: | - waiting for selector",
             ],
         )

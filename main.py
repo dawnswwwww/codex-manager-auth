@@ -86,7 +86,16 @@ def build_results_csv_path() -> Path:
     return RESULTS_DIR / f"execution_results_{timestamp}.csv"
 
 
+def normalize_csv_field(value) -> str:
+    text = str(value).replace("\r", "\n")
+    parts = [part.strip() for part in text.split("\n") if part.strip()]
+    return " | ".join(parts)
+
+
 def append_account_result(csv_path: Path, result: AccountExecutionResult):
+    if not isinstance(result, AccountExecutionResult):
+        raise TypeError(f"append_account_result expects AccountExecutionResult, got {type(result).__name__}")
+
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not csv_path.exists()
     with csv_path.open("a", encoding="utf-8", newline="") as fh:
@@ -105,13 +114,13 @@ def append_account_result(csv_path: Path, result: AccountExecutionResult):
             )
         writer.writerow(
             [
-                result.email,
-                result.registration_status,
-                result.registration_attempts,
-                result.login_status,
-                result.login_attempts,
-                result.overall_status,
-                result.error,
+                normalize_csv_field(result.email),
+                normalize_csv_field(result.registration_status),
+                normalize_csv_field(result.registration_attempts),
+                normalize_csv_field(result.login_status),
+                normalize_csv_field(result.login_attempts),
+                normalize_csv_field(result.overall_status),
+                normalize_csv_field(result.error),
             ]
         )
 
