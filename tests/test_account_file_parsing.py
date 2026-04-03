@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch, call
 
 import main
+from codex_manager_auth import runner as app_runner
 
 
 class AccountFileParsingTests(unittest.TestCase):
@@ -102,7 +103,7 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 "load_accounts",
                 side_effect=AssertionError("run_accounts should stream the account file instead of calling load_accounts"),
             ) as load_accounts_mock, patch.object(
-                main,
+                app_runner,
                 "run_registration_stage",
                 AsyncMock(side_effect=[
                     main.AccountExecutionResult(
@@ -121,7 +122,7 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ]),
             ) as registration_mock, patch.object(
-                main,
+                app_runner,
                 "run_login_stage",
                 AsyncMock(
                     return_value=main.AccountExecutionResult(
@@ -133,7 +134,7 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ),
             ) as login_mock, patch.object(
-                main,
+                app_runner,
                 "build_checkpoint_csv_path",
                 return_value=expected_csv_path,
             ):

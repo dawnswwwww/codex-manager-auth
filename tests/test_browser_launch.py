@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import main
 from codex_manager_auth import playwright_helpers
+from codex_manager_auth import runner as app_runner
 
 
 class _FakePage:
@@ -60,19 +61,19 @@ class BrowserLaunchTests(unittest.IsolatedAsyncioTestCase):
         stealth = type("StealthStub", (), {"apply_stealth_async": AsyncMock()})()
         oauth_client = _FakeOAuthClient()
 
-        with patch.object(main, "async_playwright", return_value=playwright_manager), patch.object(
-            main,
+        with patch.object(app_runner, "async_playwright", return_value=playwright_manager), patch.object(
+            app_runner,
             "exchange_refresh_token",
             AsyncMock(return_value="access-token"),
         ), patch.object(
-            main,
+            app_runner,
             "verify_registration_complete",
             AsyncMock(),
-        ), patch.object(main, "openai_register", AsyncMock()), patch.object(
-            main,
+        ), patch.object(app_runner, "openai_register", AsyncMock()), patch.object(
+            app_runner,
             "openai_second_login",
             AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
-        ), patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(main, "OAUTH_CLIENT", oauth_client):
+        ), patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(app_runner, "OAUTH_CLIENT", oauth_client):
             await main.run("user@example.com", "Secret123", "refresh-token", "client-id")
 
         launch_kwargs = playwright_manager.chromium.launch.await_args.kwargs

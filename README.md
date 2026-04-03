@@ -6,6 +6,7 @@ app_config.py
 app_config.toml
 codex_manager_auth/
   app.py
+  runner.py
   config.py
   models.py
   accounts.py
@@ -22,7 +23,8 @@ tests/
 
 - `main.py`: thin compatibility entrypoint. Script execution still goes through `uv run python main.py`.
 - `app_config.py`: compatibility wrapper around package config loading.
-- `codex_manager_auth/app.py`: single-process orchestration and compatibility exports for the current test surface.
+- `codex_manager_auth/app.py`: compatibility export layer so the current `main.py` and tests keep working without knowing internal module splits.
+- `codex_manager_auth/runner.py`: single-process registration/login orchestration and checkpoint-driven execution.
 - `codex_manager_auth/config.py`: TOML config loading.
 - `codex_manager_auth/models.py`: shared dataclasses and non-retryable error type.
 - `codex_manager_auth/accounts.py`: account-file parsing and password normalization.
