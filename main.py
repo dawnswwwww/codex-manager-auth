@@ -1,11 +1,52 @@
 import asyncio
+from dataclasses import dataclass
+from pathlib import Path
 import random
 import re
-import sys
 
 import httpx
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+
+
+ACCOUNT_FILE = Path(__file__).with_name("宝贝信息-751260402124217622.txt")
+ACCOUNT_LINE_SEPARATOR = "----"
+
+
+@dataclass(frozen=True)
+class AccountRecord:
+    email: str
+    password: str
+    client_id: str
+    refresh_token: str
+
+
+def parse_account_line(line: str, line_number: int) -> AccountRecord:
+    parts = [part.strip() for part in line.split(ACCOUNT_LINE_SEPARATOR, maxsplit=3)]
+    if len(parts) != 4 or any(not part for part in parts):
+        raise ValueError(
+            f"Invalid account format on line {line_number}: "
+            "expected email----password----client_id----refresh_token"
+        )
+    email, password, client_id, refresh_token = parts
+    return AccountRecord(
+        email=email,
+        password=password,
+        client_id=client_id,
+        refresh_token=refresh_token,
+    )
+
+
+def load_accounts(path: Path) -> list[AccountRecord]:
+    accounts: list[AccountRecord] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        accounts.append(parse_account_line(line, line_number))
+    if not accounts:
+        raise ValueError(f"No accounts found in {path}")
+    return accounts
 
 
 # --- Outlook API ---
@@ -157,19 +198,10 @@ async def submit_verification_code_with_retry(
     raise RuntimeError("Verification code was rejected after max attempts")
 
 
-def generate_password(email: str) -> str:
-    """Take the part before @, pad with 0s to 12 chars minimum."""
-    local = email.split("@")[0]
-    if len(local) < 12:
-        local = local + "0" * (12 - len(local))
-    return local
-
-
 # === Phase 1: Registration ===
-async def openai_register(page, email: str, access_token: str):
-    """Register on OpenAI. Returns password."""
-    password = generate_password(email)
-    print(f"[OpenAI] Generated password: {password}")
+async def openai_register(page, email: str, password: str, access_token: str):
+    """Register on OpenAI with the supplied credentials."""
+    print("[OpenAI] Using password from account file.")
 
     # 1. Go to OAuth page
     print("[OpenAI] Navigating to OAuth page...")
@@ -214,7 +246,8 @@ async def openai_register(page, email: str, access_token: str):
             print("[OpenAI] Account already exists! Switching to login flow...")
             await page.goto("https://auth.openai.com/log-in", wait_until="domcontentloaded")
             await human_delay(2, 4)
-            return await openai_login_flow(page, email, access_token)
+            await openai_login_flow(page, email, password, access_token)
+            return
     except Exception:
         pass
 
@@ -259,14 +292,11 @@ async def openai_register(page, email: str, access_token: str):
     await human_delay(3, 5)
     print("[OpenAI] Registration phase complete.")
 
-    return password
-
 
 # === Login flow (when account already exists) ===
-async def openai_login_flow(page, email: str, access_token: str):
+async def openai_login_flow(page, email: str, password: str, access_token: str):
     """Login to existing OpenAI account. Handles different branches after password submit."""
-    password = generate_password(email)
-    print(f"[Login] Password: {password}")
+    print("[Login] Using password from account file.")
 
     # 1. Enter email
     await page.wait_for_selector('input[type="email"][name="email"]', timeout=15000)
@@ -332,13 +362,11 @@ async def openai_login_flow(page, email: str, access_token: str):
         await human_delay(2, 3)
 
     print("[Login] Login flow complete.")
-    return password
 
 
 # === Phase 2: Second OAuth login + consent ===
-async def openai_second_login(page, email: str, access_token: str):
+async def openai_second_login(page, email: str, password: str, access_token: str):
     """After registration, re-visit OAuth URL to login and handle consent."""
-    password = generate_password(email)
     print("[OpenAI] Phase 2: Re-visiting OAuth URL to login...")
 
     await page.goto(OPENAI_OAUTH_URL, wait_until="domcontentloaded")
@@ -379,7 +407,7 @@ async def openai_second_login(page, email: str, access_token: str):
 
 
 # --- Main ---
-async def run(email: str, refresh_token: str, client_id: str):
+async def run(email: str, password: str, refresh_token: str, client_id: str):
     access_token = await exchange_refresh_token(refresh_token, client_id)
 
     async with async_playwright() as p:
@@ -401,13 +429,13 @@ async def run(email: str, refresh_token: str, client_id: str):
 
         try:
             # === Phase 1: Registration ===
-            password = await openai_register(page, email, access_token)
-            print(f"[Main] Registration done. Password: {password}")
+            await openai_register(page, email, password, access_token)
+            print("[Main] Registration done.")
 
             # === Phase 2: Second OAuth login ===
             print("[Main] Starting second OAuth pass...")
             page2 = await context.new_page()
-            await openai_second_login(page2, email, access_token)
+            await openai_second_login(page2, email, password, access_token)
 
             print(f"[Main] All done!")
         except Exception as e:
@@ -420,11 +448,21 @@ async def run(email: str, refresh_token: str, client_id: str):
             await browser.close()
 
 
+async def run_accounts(accounts_file: Path):
+    accounts = load_accounts(accounts_file)
+    print(f"[Main] Loaded {len(accounts)} account(s) from {accounts_file}")
+    for index, account in enumerate(accounts, start=1):
+        print(f"[Main] Processing account {index}/{len(accounts)}: {account.email}")
+        await run(
+            email=account.email,
+            password=account.password,
+            refresh_token=account.refresh_token,
+            client_id=account.client_id,
+        )
+
+
 def main():
-    if len(sys.argv) < 4:
-        print("Usage: uv run python main.py <email> <refresh_token> <client_id>")
-        sys.exit(1)
-    asyncio.run(run(sys.argv[1], sys.argv[2], sys.argv[3]))
+    asyncio.run(run_accounts(ACCOUNT_FILE))
 
 
 if __name__ == "__main__":
