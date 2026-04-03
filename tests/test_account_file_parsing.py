@@ -70,11 +70,10 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
 
         account_result = main.AccountExecutionResult(
             email="alpha@example.com",
+            password="Alpha123000",
             registration_status="success",
-            registration_attempts=1,
             login_status="success",
-            login_attempts=1,
-            overall_status="success",
+            error_reason="",
         )
 
         with patch.object(main, "load_accounts", return_value=accounts), patch.object(
@@ -84,11 +83,10 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 account_result,
                 main.AccountExecutionResult(
                     email="beta@example.com",
+                    password="Beta123000",
                     registration_status="success",
-                    registration_attempts=1,
                     login_status="success",
-                    login_attempts=1,
-                    overall_status="success",
+                    error_reason="",
                 ),
             ]),
         ) as run_mock, patch.object(

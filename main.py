@@ -38,12 +38,13 @@ class StageExecutionResult:
 @dataclass(frozen=True)
 class AccountExecutionResult:
     email: str
+    password: str
     registration_status: str
-    registration_attempts: int
     login_status: str
-    login_attempts: int
-    overall_status: str
-    error: str = ""
+    error_reason: str = ""
+    registration_attempts: int = 0
+    login_attempts: int = 0
+    overall_status: str = ""
 
 
 def normalize_password(password: str) -> str:
@@ -104,23 +105,19 @@ def append_account_result(csv_path: Path, result: AccountExecutionResult):
             writer.writerow(
                 [
                     "email",
+                    "password",
                     "registration_status",
-                    "registration_attempts",
                     "login_status",
-                    "login_attempts",
-                    "overall_status",
-                    "error",
+                    "error_reason",
                 ]
             )
         writer.writerow(
             [
                 normalize_csv_field(result.email),
+                normalize_csv_field(result.password),
                 normalize_csv_field(result.registration_status),
-                normalize_csv_field(result.registration_attempts),
                 normalize_csv_field(result.login_status),
-                normalize_csv_field(result.login_attempts),
-                normalize_csv_field(result.overall_status),
-                normalize_csv_field(result.error),
+                normalize_csv_field(result.error_reason),
             ]
         )
 
@@ -197,6 +194,11 @@ CSS_OA_PASSWORD_BTN = 'form:has(input[name="new-password"]) button[type="submit"
 CSS_OA_CODE_INPUT = 'input[name="code"]'
 CSS_OA_NAME_INPUT = 'input[name="name"]'
 CSS_OA_BIRTHDAY_YEAR = '[data-type="year"]'
+CSS_OA_AGE_INPUT_SELECTORS = (
+    'input[name="age"]',
+    'input[aria-label="年龄"]',
+    'input[placeholder*="年龄"]',
+)
 CSS_OA_CREATE_ACCOUNT_BTN = 'button[type="submit"]:has-text("完成帐户创建")'
 CSS_OA_ACCOUNT_EXISTS_ERROR = 'li:has-text("已存在")'
 
@@ -337,6 +339,36 @@ async def verify_registration_complete(context, email: str):
         await close_page_quietly(page)
 
 
+async def clear_and_type_locator(locator, text: str):
+    await locator.click()
+    await human_delay(0.3, 0.6)
+    await locator.press("Control+a")
+    await human_delay(0.2, 0.4)
+    await locator.press_sequentially(text, delay=random.randint(80, 150))
+    await human_delay(0.5, 1.0)
+
+
+async def fill_profile_age(page, name: str, age_value: str, year_value: str):
+    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_NAME_INPUT, timeout=15000)
+    name_el = page.locator(CSS_OA_NAME_INPUT)
+    await name_el.fill("")
+    await human_type(page, CSS_OA_NAME_INPUT, name)
+    await human_delay(0.5, 1.0)
+
+    if await is_selector_visible(page, CSS_OA_BIRTHDAY_YEAR):
+        await clear_and_type_locator(page.locator(CSS_OA_BIRTHDAY_YEAR), year_value)
+        return
+
+    age_selector = await find_visible_selector(page, CSS_OA_AGE_INPUT_SELECTORS)
+    if age_selector:
+        age_el = page.locator(age_selector)
+        await age_el.fill("")
+        await clear_and_type_locator(age_el, age_value)
+        return
+
+    raise RuntimeError("Could not find a visible age/year input on the profile page")
+
+
 async def has_invalid_code_error(page) -> bool:
     error_el = page.locator(CSS_INVALID_CODE_ERROR)
     try:
@@ -441,10 +473,11 @@ async def openai_register(page, email: str, password: str, access_token: str):
     local = email.split("@")[0]
     name = re.sub(r'\d+', '', local)
     year = str(random.randint(1990, 1999))
-    print(f"[OpenAI] Confirming age. Name: {name}, Year: {year}")
+    age = str(max(18, datetime.now().year - int(year)))
+    print(f"[OpenAI] Confirming age. Name: {name}, Age: {age}, Year: {year}")
 
     try:
-        await wait_for_selector_with_rate_limit_retry(page, CSS_OA_NAME_INPUT, timeout=15000)
+        await fill_profile_age(page, name, age, year)
     except Exception:
         await page.screenshot(path="debug_age_page.png")
         dump = await page.evaluate("""() => {
@@ -456,17 +489,6 @@ async def openai_register(page, email: str, password: str, access_token: str):
         }""")
         print(f"[Debug] Age page elements: {dump}")
         raise
-    await human_type(page, CSS_OA_NAME_INPUT, name)
-    await human_delay(0.5, 1.0)
-
-    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_BIRTHDAY_YEAR, timeout=15000)
-    year_el = page.locator(CSS_OA_BIRTHDAY_YEAR)
-    await year_el.click()
-    await human_delay(0.3, 0.6)
-    await year_el.press("Control+a")
-    await human_delay(0.2, 0.4)
-    await year_el.press_sequentially(year, delay=random.randint(80, 150))
-    await human_delay(0.5, 1.0)
 
     await wait_for_selector_with_rate_limit_retry(page, CSS_OA_CREATE_ACCOUNT_BTN, timeout=10000)
     await human_click(page, CSS_OA_CREATE_ACCOUNT_BTN)
@@ -497,12 +519,14 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
     local = email.split("@")[0]
     name = re.sub(r'\d+', '', local)
     year = str(random.randint(1990, 1999))
+    age = str(max(18, datetime.now().year - int(year)))
     completed = False
 
     for _ in range(3):
         code_el = page.locator('input[name="code"]')
         name_el = page.locator('input[name="name"]')
         birthday_el = page.locator('[data-type="year"]')
+        age_selector = await find_visible_selector(page, CSS_OA_AGE_INPUT_SELECTORS)
 
         # Case 1: verification code page
         try:
@@ -516,21 +540,10 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
         # Case 2: name/birthday page
         try:
             if (await name_el.count() > 0 and await name_el.first.is_visible(timeout=3000)) or \
-               (await birthday_el.count() > 0 and await birthday_el.first.is_visible(timeout=3000)):
-                print(f"[Login] Birthday page found, name: {name}, year: {year}")
-
-                if await name_el.count() > 0:
-                    await name_el.first.fill("")
-                    await human_type(page, 'input[name="name"]', name)
-                    await human_delay(0.5, 1.0)
-
-                if await birthday_el.count() > 0:
-                    await birthday_el.first.click()
-                    await human_delay(0.3, 0.6)
-                    await birthday_el.first.press("Control+a")
-                    await human_delay(0.2, 0.4)
-                    await birthday_el.first.press_sequentially(year, delay=random.randint(80, 150))
-                    await human_delay(0.5, 1.0)
+               (await birthday_el.count() > 0 and await birthday_el.first.is_visible(timeout=3000)) or \
+               age_selector:
+                print(f"[Login] Profile page found, name: {name}, age: {age}, year: {year}")
+                await fill_profile_age(page, name, age, year)
 
                 submit_btn = page.locator('button[type="submit"]:has-text("完成帐户创建"), button[type="submit"]:has-text("继续")')
                 if await submit_btn.count() > 0:
@@ -608,12 +621,13 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
     except Exception as exc:
         return AccountExecutionResult(
             email=email,
+            password=password,
             registration_status="skipped",
-            registration_attempts=0,
             login_status="skipped",
+            error_reason=str(exc),
+            registration_attempts=0,
             login_attempts=0,
             overall_status="failed",
-            error=str(exc),
         )
 
     async with async_playwright() as p:
@@ -643,12 +657,13 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
             if registration_result.status != "success":
                 return AccountExecutionResult(
                     email=email,
+                    password=password,
                     registration_status="failed",
-                    registration_attempts=registration_result.attempts,
                     login_status="skipped",
+                    error_reason=registration_result.error,
+                    registration_attempts=registration_result.attempts,
                     login_attempts=0,
                     overall_status="failed",
-                    error=registration_result.error,
                 )
 
             print("[Main] Registration done.")
@@ -669,12 +684,13 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
 
             return AccountExecutionResult(
                 email=email,
+                password=password,
                 registration_status="success",
-                registration_attempts=registration_result.attempts,
                 login_status=login_result.status,
+                error_reason=error,
+                registration_attempts=registration_result.attempts,
                 login_attempts=login_result.attempts,
                 overall_status=overall_status,
-                error=error,
             )
         finally:
             await browser.close()

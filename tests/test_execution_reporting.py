@@ -44,6 +44,48 @@ class _StaticUrlPage:
         self.url = url
 
 
+class _ProfileLocator:
+    def __init__(self, page, selector):
+        self.page = page
+        self.selector = selector
+        self.first = self
+
+    async def count(self):
+        return 1 if self.page.visible.get(self.selector, False) else 0
+
+    async def is_visible(self, timeout=None):
+        return self.page.visible.get(self.selector, False)
+
+    async def fill(self, value):
+        self.page.fills.append((self.selector, value))
+
+    async def click(self):
+        self.page.clicks.append(self.selector)
+
+    async def press(self, key):
+        self.page.presses.append((self.selector, key))
+
+    async def press_sequentially(self, text, delay=None):
+        self.page.typed.append((self.selector, text))
+
+
+class _ProfilePage:
+    def __init__(self, visible):
+        self.visible = visible
+        self.fills = []
+        self.clicks = []
+        self.presses = []
+        self.typed = []
+
+    def locator(self, selector):
+        return _ProfileLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        if self.visible.get(selector, False):
+            return object()
+        raise RuntimeError(f"selector not visible: {selector}")
+
+
 class _RateLimitLocator:
     def __init__(self, page, selector):
         self.page = page
@@ -166,6 +208,28 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.retry_clicks, 1)
         self.assertEqual(page.wait_attempts, 2)
 
+    async def test_fill_profile_age_uses_age_input_when_year_input_is_missing(self):
+        page = _ProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_AGE_INPUT_SELECTORS[0]: True,
+                main.CSS_OA_BIRTHDAY_YEAR: False,
+            }
+        )
+
+        with patch.object(main, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "CroffMost", "32", "1994")
+
+        self.assertEqual(
+            page.fills,
+            [
+                (main.CSS_OA_NAME_INPUT, ""),
+                (main.CSS_OA_AGE_INPUT_SELECTORS[0], ""),
+            ],
+        )
+        self.assertIn((main.CSS_OA_NAME_INPUT, "CroffMost"), page.typed)
+        self.assertIn((main.CSS_OA_AGE_INPUT_SELECTORS[0], "32"), page.typed)
+
 
 class CsvResultTests(unittest.TestCase):
     def test_append_account_result_rejects_non_result_objects(self):
@@ -177,12 +241,10 @@ class CsvResultTests(unittest.TestCase):
     def test_append_account_result_writes_header_and_row(self):
         result = main.AccountExecutionResult(
             email="user@example.com",
+            password="Secret123000",
             registration_status="success",
-            registration_attempts=2,
             login_status="failed",
-            login_attempts=3,
-            overall_status="failed",
-            error="consent callback not reached\nCall log:\n  - waiting for selector",
+            error_reason="consent callback not reached\nCall log:\n  - waiting for selector",
         )
 
         with TemporaryDirectory() as tmpdir:
@@ -194,7 +256,7 @@ class CsvResultTests(unittest.TestCase):
         self.assertEqual(
             content,
             [
-                "email,registration_status,registration_attempts,login_status,login_attempts,overall_status,error",
-                "user@example.com,success,2,failed,3,failed,consent callback not reached | Call log: | - waiting for selector",
+                "email,password,registration_status,login_status,error_reason",
+                "user@example.com,Secret123000,success,failed,consent callback not reached | Call log: | - waiting for selector",
             ],
         )
