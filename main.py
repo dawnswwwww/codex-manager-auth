@@ -1,8 +1,12 @@
 import asyncio
+import csv
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import random
 import re
+import time
+from urllib.parse import parse_qs, urlparse
 
 from app_config import APP_CONFIG
 import httpx
@@ -12,6 +16,8 @@ from playwright_stealth import Stealth
 
 ACCOUNT_FILE = APP_CONFIG.account_file
 ACCOUNT_LINE_SEPARATOR = "----"
+MAX_STAGE_ATTEMPTS = 3
+RESULTS_DIR = Path(__file__).with_name("results")
 
 
 @dataclass(frozen=True)
@@ -20,6 +26,24 @@ class AccountRecord:
     password: str
     client_id: str
     refresh_token: str
+
+
+@dataclass(frozen=True)
+class StageExecutionResult:
+    status: str
+    attempts: int
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class AccountExecutionResult:
+    email: str
+    registration_status: str
+    registration_attempts: int
+    login_status: str
+    login_attempts: int
+    overall_status: str
+    error: str = ""
 
 
 def parse_account_line(line: str, line_number: int) -> AccountRecord:
@@ -48,6 +72,48 @@ def load_accounts(path: Path) -> list[AccountRecord]:
     if not accounts:
         raise ValueError(f"No accounts found in {path}")
     return accounts
+
+
+def build_results_csv_path() -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return RESULTS_DIR / f"execution_results_{timestamp}.csv"
+
+
+def append_account_result(csv_path: Path, result: AccountExecutionResult):
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not csv_path.exists()
+    with csv_path.open("a", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        if write_header:
+            writer.writerow(
+                [
+                    "email",
+                    "registration_status",
+                    "registration_attempts",
+                    "login_status",
+                    "login_attempts",
+                    "overall_status",
+                    "error",
+                ]
+            )
+        writer.writerow(
+            [
+                result.email,
+                result.registration_status,
+                result.registration_attempts,
+                result.login_status,
+                result.login_attempts,
+                result.overall_status,
+                result.error,
+            ]
+        )
+
+
+def get_expected_callback_url() -> str:
+    redirect_uri = parse_qs(urlparse(OPENAI_OAUTH_URL).query).get("redirect_uri", [None])[0]
+    if not redirect_uri:
+        raise RuntimeError("redirect_uri is missing from OPENAI_OAUTH_URL")
+    return redirect_uri
 
 
 # --- Outlook API ---
@@ -142,6 +208,77 @@ async def human_type(page, selector: str, text: str):
 async def human_click(page, selector: str):
     await human_delay(0.5, 1.5)
     await page.locator(selector).click()
+
+
+async def close_page_quietly(page):
+    if page is None or not hasattr(page, "close"):
+        return
+    try:
+        await page.close()
+    except Exception:
+        pass
+
+
+async def new_stealth_page(context):
+    page = await context.new_page()
+    stealth = Stealth()
+    await stealth.apply_stealth_async(page)
+    return page
+
+
+async def is_selector_visible(page, selector: str) -> bool:
+    try:
+        locator = page.locator(selector)
+        return await locator.count() > 0 and await locator.first.is_visible(timeout=1000)
+    except Exception:
+        return False
+
+
+async def wait_for_callback_url(page, timeout_s: float = 15.0, poll_interval_s: float = 0.2) -> str:
+    expected_callback_url = get_expected_callback_url()
+    deadline = time.monotonic() + timeout_s
+
+    while time.monotonic() <= deadline:
+        if page.url.startswith(expected_callback_url):
+            return page.url
+        await asyncio.sleep(poll_interval_s)
+
+    raise RuntimeError(f"OAuth callback was not reached within {timeout_s:.1f}s")
+
+
+async def execute_stage_with_retry(stage_name: str, operation, max_attempts: int = MAX_STAGE_ATTEMPTS) -> StageExecutionResult:
+    last_error = ""
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await operation()
+            return StageExecutionResult(status="success", attempts=attempt)
+        except Exception as exc:
+            last_error = str(exc)
+            print(f"[{stage_name}] Attempt {attempt}/{max_attempts} failed: {last_error}")
+
+    return StageExecutionResult(status="failed", attempts=max_attempts, error=last_error)
+
+
+async def verify_registration_complete(context, email: str):
+    page = await new_stealth_page(context)
+    try:
+        print("[OpenAI] Verifying registration on a fresh OAuth page...")
+        await page.goto(OPENAI_OAUTH_URL, wait_until="domcontentloaded")
+        await page.wait_for_selector(CSS_L_EMAIL, timeout=15000)
+        await human_type(page, CSS_L_EMAIL, email)
+        await human_click(page, CSS_L_CONTINUE_EMAIL)
+        await human_delay(2, 4)
+
+        if await is_selector_visible(page, CSS_L_PASSWORD):
+            return
+
+        if await is_selector_visible(page, CSS_OA_PASSWORD_INPUT):
+            raise RuntimeError("Registration verification fell back to sign-up password screen")
+
+        raise RuntimeError(f"Registration verification did not reach the login password screen (url={page.url})")
+    finally:
+        await close_page_quietly(page)
 
 
 async def has_invalid_code_error(page) -> bool:
@@ -304,6 +441,7 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
     local = email.split("@")[0]
     name = re.sub(r'\d+', '', local)
     year = str(random.randint(1990, 1999))
+    completed = False
 
     for _ in range(3):
         code_el = page.locator('input[name="code"]')
@@ -342,12 +480,20 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
                 if await submit_btn.count() > 0:
                     await human_click(page, 'button[type="submit"]:has-text("完成帐户创建"), button[type="submit"]:has-text("继续")')
                 await human_delay(3, 5)
+                completed = True
                 break
         except Exception:
             pass
 
+        if page.url.startswith(get_expected_callback_url()) or await is_selector_visible(page, CSS_L_CONSENT_BTN):
+            completed = True
+            break
+
         # Nothing matched yet, wait a bit
         await human_delay(2, 3)
+
+    if not completed:
+        raise RuntimeError("Login flow did not reach a confirmed completion state")
 
     print("[Login] Login flow complete.")
 
@@ -389,14 +535,26 @@ async def openai_second_login(page, email: str, password: str, access_token: str
     print("[OpenAI] Waiting for consent page...")
     await page.wait_for_selector(CSS_L_CONSENT_BTN, timeout=15000)
     await human_click(page, CSS_L_CONSENT_BTN)
-    await human_delay(3, 5)
+    callback_url = await wait_for_callback_url(page)
 
-    print(f"[OpenAI] Consent submitted. Final URL: {page.url}")
+    print(f"[OpenAI] Consent submitted. Final URL: {callback_url}")
+    return callback_url
 
 
 # --- Main ---
 async def run(email: str, password: str, refresh_token: str, client_id: str):
-    access_token = await exchange_refresh_token(refresh_token, client_id)
+    try:
+        access_token = await exchange_refresh_token(refresh_token, client_id)
+    except Exception as exc:
+        return AccountExecutionResult(
+            email=email,
+            registration_status="skipped",
+            registration_attempts=0,
+            login_status="skipped",
+            login_attempts=0,
+            overall_status="failed",
+            error=str(exc),
+        )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -412,42 +570,72 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
             viewport={"width": 1440, "height": 900},
             locale="zh-CN",
         )
-        page = await context.new_page()
-        stealth = Stealth()
-        await stealth.apply_stealth_async(page)
-
         try:
-            # === Phase 1: Registration ===
-            await openai_register(page, email, password, access_token)
+            async def registration_operation():
+                page = await new_stealth_page(context)
+                try:
+                    await openai_register(page, email, password, access_token)
+                    await verify_registration_complete(context, email)
+                finally:
+                    await close_page_quietly(page)
+
+            registration_result = await execute_stage_with_retry("registration", registration_operation)
+            if registration_result.status != "success":
+                return AccountExecutionResult(
+                    email=email,
+                    registration_status="failed",
+                    registration_attempts=registration_result.attempts,
+                    login_status="skipped",
+                    login_attempts=0,
+                    overall_status="failed",
+                    error=registration_result.error,
+                )
+
             print("[Main] Registration done.")
 
-            # === Phase 2: Second OAuth login ===
-            print("[Main] Starting second OAuth pass...")
-            page2 = await context.new_page()
-            await openai_second_login(page2, email, password, access_token)
+            async def login_operation():
+                print("[Main] Starting second OAuth pass...")
+                page = await new_stealth_page(context)
+                try:
+                    await openai_second_login(page, email, password, access_token)
+                finally:
+                    await close_page_quietly(page)
 
-            print(f"[Main] All done!")
-        except Exception as e:
-            print(f"[Main] Error: {e}")
-            try:
-                await page.screenshot(path=f"error_{email.split('@')[0]}.png")
-            except Exception:
-                pass
+            login_result = await execute_stage_with_retry("login", login_operation)
+            overall_status = "success" if login_result.status == "success" else "failed"
+            error = login_result.error if login_result.status != "success" else ""
+            if overall_status == "success":
+                print("[Main] All done!")
+
+            return AccountExecutionResult(
+                email=email,
+                registration_status="success",
+                registration_attempts=registration_result.attempts,
+                login_status=login_result.status,
+                login_attempts=login_result.attempts,
+                overall_status=overall_status,
+                error=error,
+            )
         finally:
             await browser.close()
 
 
 async def run_accounts(accounts_file: Path):
     accounts = load_accounts(accounts_file)
+    csv_path = build_results_csv_path()
     print(f"[Main] Loaded {len(accounts)} account(s) from {accounts_file}")
+    print(f"[Main] Writing execution results to {csv_path}")
     for index, account in enumerate(accounts, start=1):
         print(f"[Main] Processing account {index}/{len(accounts)}: {account.email}")
-        await run(
+        result = await run(
             email=account.email,
             password=account.password,
             refresh_token=account.refresh_token,
             client_id=account.client_id,
         )
+        append_account_result(csv_path, result)
+
+    return csv_path
 
 
 def main():

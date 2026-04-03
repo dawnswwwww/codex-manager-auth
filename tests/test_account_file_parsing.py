@@ -61,11 +61,34 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
 
+        account_result = main.AccountExecutionResult(
+            email="alpha@example.com",
+            registration_status="success",
+            registration_attempts=1,
+            login_status="success",
+            login_attempts=1,
+            overall_status="success",
+        )
+
         with patch.object(main, "load_accounts", return_value=accounts), patch.object(
             main,
             "run",
-            AsyncMock(),
-        ) as run_mock:
+            AsyncMock(side_effect=[
+                account_result,
+                main.AccountExecutionResult(
+                    email="beta@example.com",
+                    registration_status="success",
+                    registration_attempts=1,
+                    login_status="success",
+                    login_attempts=1,
+                    overall_status="success",
+                ),
+            ]),
+        ) as run_mock, patch.object(
+            main,
+            "build_results_csv_path",
+            return_value=Path("results.csv"),
+        ), patch.object(main, "append_account_result") as append_mock:
             await main.run_accounts(Path("accounts.txt"))
 
         self.assertEqual(
@@ -85,3 +108,4 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ],
         )
+        self.assertEqual(append_mock.call_count, 2)

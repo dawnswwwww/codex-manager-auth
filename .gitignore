@@ -12,3 +12,4 @@ wheels/
 # Secrets and runtime artifacts
 accout/
 error_*.png
+results/

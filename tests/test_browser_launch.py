@@ -42,6 +42,10 @@ class BrowserLaunchTests(unittest.IsolatedAsyncioTestCase):
             main,
             "exchange_refresh_token",
             AsyncMock(return_value="access-token"),
+        ), patch.object(
+            main,
+            "verify_registration_complete",
+            AsyncMock(),
         ), patch.object(main, "openai_register", AsyncMock()), patch.object(
             main,
             "openai_second_login",
