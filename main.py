@@ -414,6 +414,7 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
         browser = await p.chromium.launch(
             headless=False,
             args=[
+                '--incognito',
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
             ],
