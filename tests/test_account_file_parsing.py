@@ -50,27 +50,58 @@ class AccountFileParsingTests(unittest.TestCase):
             ],
         )
 
+    def test_iter_accounts_streams_lines_without_using_read_text(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n"
+                "beta@example.com----Beta123----client-b----refresh-b\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(Path, "read_text", side_effect=AssertionError("iter_accounts should not call read_text")):
+                accounts = list(main.iter_accounts(accounts_file))
+
+        self.assertEqual([account.email for account in accounts], ["alpha@example.com", "beta@example.com"])
+
+    def test_build_checkpoint_csv_path_is_stable_for_the_same_account_file(self):
+        accounts_file = Path("/tmp/宝贝信息-985260403233027741.txt")
+
+        first = main.build_checkpoint_csv_path(accounts_file)
+        second = main.build_checkpoint_csv_path(accounts_file)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, "宝贝信息-985260403233027741_checkpoint.csv")
+
 
 class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_accounts_registers_all_accounts_then_logs_in_eligible_rows_from_csv(self):
-        accounts = [
-            main.AccountRecord(
+    async def test_run_accounts_streams_account_file_and_logs_in_eligible_rows_from_checkpoint(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n"
+                "beta@example.com----Beta123----client-b----refresh-b\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            alpha_account = main.AccountRecord(
                 email="alpha@example.com",
                 password="Alpha123",
                 client_id="client-a",
                 refresh_token="refresh-a",
-            ),
-            main.AccountRecord(
+            )
+            beta_account = main.AccountRecord(
                 email="beta@example.com",
                 password="Beta123",
                 client_id="client-b",
                 refresh_token="refresh-b",
-            ),
-        ]
+            )
 
-        with TemporaryDirectory() as tmpdir:
-            expected_csv_path = Path(tmpdir) / "results.csv"
-            with patch.object(main, "load_accounts", return_value=accounts), patch.object(
+            with patch.object(
+                main,
+                "load_accounts",
+                side_effect=AssertionError("run_accounts should stream the account file instead of calling load_accounts"),
+            ) as load_accounts_mock, patch.object(
                 main,
                 "run_registration_stage",
                 AsyncMock(side_effect=[
@@ -103,20 +134,21 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ) as login_mock, patch.object(
                 main,
-                "build_results_csv_path",
+                "build_checkpoint_csv_path",
                 return_value=expected_csv_path,
             ):
-                csv_path = await main.run_accounts(Path("accounts.txt"))
+                csv_path = await main.run_accounts(accounts_file)
 
+        load_accounts_mock.assert_not_called()
         self.assertEqual(
             registration_mock.await_args_list,
             [
-                call(accounts[0]),
-                call(accounts[1]),
+                call(alpha_account),
+                call(beta_account),
             ],
         )
         login_mock.assert_awaited_once()
-        self.assertEqual(login_mock.await_args.args[0], accounts[0])
+        self.assertEqual(login_mock.await_args.args[0], alpha_account)
         self.assertEqual(login_mock.await_args.args[1].email, "alpha@example.com")
         self.assertEqual(login_mock.await_args.args[1].registration_status, "success")
         self.assertEqual(csv_path, expected_csv_path)

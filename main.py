@@ -92,21 +92,31 @@ def parse_account_line(line: str, line_number: int) -> AccountRecord:
     )
 
 
-def load_accounts(path: Path) -> list[AccountRecord]:
-    accounts: list[AccountRecord] = []
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        accounts.append(parse_account_line(line, line_number))
-    if not accounts:
+def iter_accounts(path: Path):
+    seen_emails: set[str] = set()
+    found_account = False
+    with path.open("r", encoding="utf-8") as fh:
+        for line_number, raw_line in enumerate(fh, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            found_account = True
+            account = parse_account_line(line, line_number)
+            if account.email in seen_emails:
+                raise ValueError(f"Duplicate account email in account file: {account.email}")
+            seen_emails.add(account.email)
+            yield account
+
+    if not found_account:
         raise ValueError(f"No accounts found in {path}")
-    return accounts
 
 
-def build_results_csv_path() -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return RESULTS_DIR / f"execution_results_{timestamp}.csv"
+def load_accounts(path: Path) -> list[AccountRecord]:
+    return list(iter_accounts(path))
+
+
+def build_checkpoint_csv_path(accounts_file: Path) -> Path:
+    return RESULTS_DIR / f"{accounts_file.stem}_checkpoint.csv"
 
 
 def normalize_csv_field(value) -> str:
@@ -124,15 +134,6 @@ def create_pending_account_result(account: AccountRecord) -> AccountExecutionRes
         error_reason="",
         overall_status="pending",
     )
-
-
-def build_account_index(accounts: list[AccountRecord]) -> dict[str, AccountRecord]:
-    index: dict[str, AccountRecord] = {}
-    for account in accounts:
-        if account.email in index:
-            raise ValueError(f"Duplicate account email in account file: {account.email}")
-        index[account.email] = account
-    return index
 
 
 def load_account_results(csv_path: Path) -> list[AccountExecutionResult]:
@@ -209,6 +210,13 @@ def upsert_account_result(csv_path: Path, result: AccountExecutionResult):
         results.append(result)
 
     write_account_results_atomic(csv_path, results)
+
+
+def find_account_result(csv_path: Path, email: str) -> AccountExecutionResult | None:
+    for result in load_account_results(csv_path):
+        if result.email == email:
+            return result
+    return None
 
 
 def get_expected_callback_url() -> str:
@@ -852,28 +860,40 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
 
 
 async def run_accounts(accounts_file: Path):
-    accounts = load_accounts(accounts_file)
-    account_index = build_account_index(accounts)
-    csv_path = build_results_csv_path()
-    initial_results = [create_pending_account_result(account) for account in accounts]
-    write_account_results_atomic(csv_path, initial_results)
-    print(f"[Main] Loaded {len(accounts)} account(s) from {accounts_file}")
-    print(f"[Main] Writing execution results to {csv_path}")
+    csv_path = build_checkpoint_csv_path(accounts_file)
+    print(f"[Main] Streaming accounts from {accounts_file}")
+    print(f"[Main] Using checkpoint CSV {csv_path}")
 
-    registration_rows = load_account_results(csv_path)
-    for index, row in enumerate(registration_rows, start=1):
-        account = account_index[row.email]
-        print(f"[Main] Registration phase account {index}/{len(registration_rows)}: {account.email}")
+    registration_count = 0
+    for account in iter_accounts(accounts_file):
+        registration_count += 1
+        current_result = find_account_result(csv_path, account.email)
+        if current_result is None:
+            current_result = create_pending_account_result(account)
+            upsert_account_result(csv_path, current_result)
+
+        print(f"[Main] Registration phase account {registration_count}: {account.email}")
+        if current_result.registration_status in LOGIN_ELIGIBLE_REGISTRATION_STATUSES:
+            print(f"[Main] Registration already completed for {account.email}, skipping.")
+            continue
+
         registration_result = await run_registration_stage(account)
         upsert_account_result(csv_path, registration_result)
 
-    login_rows = load_account_results(csv_path)
-    eligible_login_rows = [row for row in login_rows if should_attempt_login(row)]
-    print(f"[Main] Login phase will process {len(eligible_login_rows)} account(s) from CSV.")
-    for index, row in enumerate(eligible_login_rows, start=1):
-        account = account_index[row.email]
-        print(f"[Main] Login phase account {index}/{len(eligible_login_rows)}: {account.email}")
-        login_result = await run_login_stage(account, row)
+    if registration_count == 0:
+        raise ValueError(f"No accounts found in {accounts_file}")
+
+    login_count = 0
+    for account in iter_accounts(accounts_file):
+        current_result = find_account_result(csv_path, account.email)
+        if current_result is None:
+            raise RuntimeError(f"Checkpoint row missing for account: {account.email}")
+        if not should_attempt_login(current_result):
+            continue
+
+        login_count += 1
+        print(f"[Main] Login phase account {login_count}: {account.email}")
+        login_result = await run_login_stage(account, current_result)
         upsert_account_result(csv_path, login_result)
 
     return csv_path
