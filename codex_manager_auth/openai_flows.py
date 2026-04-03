@@ -14,6 +14,7 @@ from .openai_selectors import (
     CSS_L_CONTINUE_PWD,
     CSS_L_EMAIL,
     CSS_L_PASSWORD,
+    CSS_OA_BIRTHDAY_HIDDEN_INPUT,
     CSS_OA_ACCOUNT_EXISTS_ERROR,
     CSS_OA_AGE_INPUT_SELECTORS,
     CSS_OA_BIRTHDAY_YEAR,
@@ -159,6 +160,26 @@ async def clear_and_type_locator(locator, text: str):
     await human_delay(0.5, 1.0)
 
 
+async def has_selector(page, selector: str) -> bool:
+    try:
+        return await page.locator(selector).count() > 0
+    except Exception:
+        return False
+
+
+async def set_hidden_birthday_value(page, birthday_value: str):
+    locator = page.locator(CSS_OA_BIRTHDAY_HIDDEN_INPUT)
+    await locator.evaluate(
+        """(node, value) => {
+            node.value = value;
+            node.dispatchEvent(new Event('input', { bubbles: true }));
+            node.dispatchEvent(new Event('change', { bubbles: true }));
+        }""",
+        birthday_value,
+    )
+    await human_delay(0.3, 0.6)
+
+
 async def fill_profile_age(page, name: str, age_value: str, year_value: str):
     await wait_for_selector_with_rate_limit_retry(page, CSS_OA_NAME_INPUT, timeout=15000)
     name_el = page.locator(CSS_OA_NAME_INPUT)
@@ -175,6 +196,10 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str):
         age_el = page.locator(age_selector)
         await age_el.fill("")
         await clear_and_type_locator(age_el, age_value)
+        return
+
+    if await has_selector(page, CSS_OA_BIRTHDAY_HIDDEN_INPUT):
+        await set_hidden_birthday_value(page, f"{year_value}-04-04")
         return
 
     raise RuntimeError("Could not find a visible age/year input on the profile page")

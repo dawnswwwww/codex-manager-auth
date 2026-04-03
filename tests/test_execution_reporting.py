@@ -82,6 +82,9 @@ class _ProfileLocator:
     async def press_sequentially(self, text, delay=None):
         self.page.typed.append((self.selector, text))
 
+    async def evaluate(self, script, value):
+        self.page.evaluated.append((self.selector, value))
+
 
 class _ProfilePage:
     def __init__(self, visible):
@@ -90,6 +93,7 @@ class _ProfilePage:
         self.clicks = []
         self.presses = []
         self.typed = []
+        self.evaluated = []
 
     def locator(self, selector):
         return _ProfileLocator(self, selector)
@@ -426,6 +430,22 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn((main.CSS_OA_NAME_INPUT, "CroffMost"), page.typed)
         self.assertIn((main.CSS_OA_AGE_INPUT_SELECTORS[0], "32"), page.typed)
+
+    async def test_fill_profile_age_sets_hidden_birthday_value_for_dropdown_variant(self):
+        page = _ProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_BIRTHDAY_YEAR: False,
+                main.CSS_OA_AGE_INPUT_SELECTORS[0]: False,
+                main.CSS_OA_BIRTHDAY_HIDDEN_INPUT: True,
+            }
+        )
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "BadameWages", "33", "1993")
+
+        self.assertIn((main.CSS_OA_NAME_INPUT, "BadameWages"), page.typed)
+        self.assertIn((main.CSS_OA_BIRTHDAY_HIDDEN_INPUT, "1993-04-04"), page.evaluated)
 
 
 class CsvResultTests(unittest.TestCase):

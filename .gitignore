@@ -12,5 +12,6 @@ wheels/
 # Secrets and runtime artifacts
 accout/
 error_*.png
+debug_*.png
 results/
 tokens/
