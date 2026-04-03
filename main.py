@@ -200,6 +200,14 @@ CSS_L_CODE = 'input[name="code"]'
 CSS_L_CONTINUE_CODE = 'button[name="intent"][value="validate"]'
 CSS_L_CONSENT_BTN = 'button[type="submit"]:has-text("继续")'
 CSS_INVALID_CODE_ERROR = 'li:has-text("代码不正确")'
+RATE_LIMIT_MESSAGE_SELECTORS = (
+    'text=/Rate limit exceeded/i',
+    'text=/try again later/i',
+)
+RATE_LIMIT_RETRY_BUTTON_SELECTORS = (
+    'button:has-text("重试")',
+    'button:has-text("Retry")',
+)
 
 
 # --- Human-like helpers ---
@@ -241,6 +249,38 @@ async def is_selector_visible(page, selector: str) -> bool:
         return False
 
 
+async def find_visible_selector(page, selectors: tuple[str, ...]) -> str | None:
+    for selector in selectors:
+        if await is_selector_visible(page, selector):
+            return selector
+    return None
+
+
+async def retry_rate_limit_error_page(page) -> bool:
+    message_selector = await find_visible_selector(page, RATE_LIMIT_MESSAGE_SELECTORS)
+    retry_selector = await find_visible_selector(page, RATE_LIMIT_RETRY_BUTTON_SELECTORS)
+    if not message_selector or not retry_selector:
+        return False
+
+    print("[OpenAI] Rate limit page detected. Clicking retry...")
+    await human_click(page, retry_selector)
+    await human_delay(1, 2)
+    return True
+
+
+async def wait_for_selector_with_rate_limit_retry(page, selector: str, timeout: int = 15000):
+    retried_rate_limit = await retry_rate_limit_error_page(page)
+
+    try:
+        return await page.wait_for_selector(selector, timeout=timeout)
+    except Exception:
+        if not retried_rate_limit:
+            retried_rate_limit = await retry_rate_limit_error_page(page)
+        if not retried_rate_limit:
+            raise
+        return await page.wait_for_selector(selector, timeout=timeout)
+
+
 async def wait_for_callback_url(page, timeout_s: float = 15.0, poll_interval_s: float = 0.2) -> str:
     expected_callback_url = get_expected_callback_url()
     deadline = time.monotonic() + timeout_s
@@ -272,7 +312,7 @@ async def verify_registration_complete(context, email: str):
     try:
         print("[OpenAI] Verifying registration on a fresh OAuth page...")
         await page.goto(OPENAI_OAUTH_URL, wait_until="domcontentloaded")
-        await page.wait_for_selector(CSS_L_EMAIL, timeout=15000)
+        await wait_for_selector_with_rate_limit_retry(page, CSS_L_EMAIL, timeout=15000)
         await human_type(page, CSS_L_EMAIL, email)
         await human_click(page, CSS_L_CONTINUE_EMAIL)
         await human_delay(2, 4)
@@ -342,13 +382,13 @@ async def openai_register(page, email: str, password: str, access_token: str):
 
     # 2. Click "Sign up"
     print("[OpenAI] Clicking sign up link...")
-    await page.wait_for_selector(CSS_OA_SIGNUP_LINK, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_SIGNUP_LINK, timeout=15000)
     await human_click(page, CSS_OA_SIGNUP_LINK)
     await human_delay(2, 4)
 
     # 3. Enter email
     print(f"[OpenAI] Entering email: {email}")
-    await page.wait_for_selector(CSS_OA_EMAIL_INPUT, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_EMAIL_INPUT, timeout=15000)
     await human_type(page, CSS_OA_EMAIL_INPUT, email)
     await human_click(page, CSS_OA_CONTINUE_BTN)
     await human_delay(2, 4)
@@ -356,7 +396,7 @@ async def openai_register(page, email: str, password: str, access_token: str):
     # 4. Enter password (registration continues)
     print("[OpenAI] Entering password...")
     try:
-        await page.wait_for_selector(CSS_OA_PASSWORD_INPUT, timeout=15000)
+        await wait_for_selector_with_rate_limit_retry(page, CSS_OA_PASSWORD_INPUT, timeout=15000)
     except Exception:
         await page.screenshot(path="debug_password_page.png")
         dump = await page.evaluate("""() => {
@@ -385,7 +425,7 @@ async def openai_register(page, email: str, password: str, access_token: str):
 
     # 5. Enter verification code
     print("[OpenAI] Waiting for code input...")
-    await page.wait_for_selector(CSS_OA_CODE_INPUT, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_CODE_INPUT, timeout=15000)
     await submit_verification_code_with_retry(page, CSS_OA_CODE_INPUT, access_token)
 
     # 6. Confirm age
@@ -395,7 +435,7 @@ async def openai_register(page, email: str, password: str, access_token: str):
     print(f"[OpenAI] Confirming age. Name: {name}, Year: {year}")
 
     try:
-        await page.wait_for_selector(CSS_OA_NAME_INPUT, timeout=15000)
+        await wait_for_selector_with_rate_limit_retry(page, CSS_OA_NAME_INPUT, timeout=15000)
     except Exception:
         await page.screenshot(path="debug_age_page.png")
         dump = await page.evaluate("""() => {
@@ -410,7 +450,7 @@ async def openai_register(page, email: str, password: str, access_token: str):
     await human_type(page, CSS_OA_NAME_INPUT, name)
     await human_delay(0.5, 1.0)
 
-    await page.wait_for_selector(CSS_OA_BIRTHDAY_YEAR, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_BIRTHDAY_YEAR, timeout=15000)
     year_el = page.locator(CSS_OA_BIRTHDAY_YEAR)
     await year_el.click()
     await human_delay(0.3, 0.6)
@@ -419,7 +459,7 @@ async def openai_register(page, email: str, password: str, access_token: str):
     await year_el.press_sequentially(year, delay=random.randint(80, 150))
     await human_delay(0.5, 1.0)
 
-    await page.wait_for_selector(CSS_OA_CREATE_ACCOUNT_BTN, timeout=10000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_OA_CREATE_ACCOUNT_BTN, timeout=10000)
     await human_click(page, CSS_OA_CREATE_ACCOUNT_BTN)
     await human_delay(3, 5)
     print("[OpenAI] Registration phase complete.")
@@ -431,14 +471,14 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
     print("[Login] Using password from account file.")
 
     # 1. Enter email
-    await page.wait_for_selector('input[type="email"][name="email"]', timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, 'input[type="email"][name="email"]', timeout=15000)
     await human_type(page, 'input[type="email"][name="email"]', email)
     await human_click(page, 'form button[type="submit"][name="intent"]')
     await human_delay(2, 4)
 
     # 2. Enter password
     print("[Login] Entering password...")
-    await page.wait_for_selector('input[name="current-password"]', timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, 'input[name="current-password"]', timeout=15000)
     await human_type(page, 'input[name="current-password"]', password)
     await human_click(page, 'form:has(input[name="current-password"]) button[type="submit"]')
     await human_delay(2, 4)
@@ -496,6 +536,9 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
             completed = True
             break
 
+        if await retry_rate_limit_error_page(page):
+            continue
+
         # Nothing matched yet, wait a bit
         await human_delay(2, 3)
 
@@ -515,21 +558,21 @@ async def openai_second_login(page, email: str, password: str, access_token: str
 
     # 1. Enter email
     print(f"[OpenAI] Entering email: {email}")
-    await page.wait_for_selector(CSS_L_EMAIL, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_L_EMAIL, timeout=15000)
     await human_type(page, CSS_L_EMAIL, email)
     await human_click(page, CSS_L_CONTINUE_EMAIL)
     await human_delay(2, 4)
 
     # 2. Enter password
     print("[OpenAI] Entering password...")
-    await page.wait_for_selector(CSS_L_PASSWORD, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_L_PASSWORD, timeout=15000)
     await human_type(page, CSS_L_PASSWORD, password)
     await human_click(page, CSS_L_CONTINUE_PWD)
     await human_delay(2, 4)
 
     # 3. Enter verification code (new code sent)
     print("[OpenAI] Waiting for verification code input...")
-    await page.wait_for_selector(CSS_L_CODE, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_L_CODE, timeout=15000)
     await submit_verification_code_with_retry(
         page,
         CSS_L_CODE,
@@ -540,7 +583,7 @@ async def openai_second_login(page, email: str, password: str, access_token: str
 
     # 4. Consent page: "使用 ChatGPT 登录到 Codex" → click 继续
     print("[OpenAI] Waiting for consent page...")
-    await page.wait_for_selector(CSS_L_CONSENT_BTN, timeout=15000)
+    await wait_for_selector_with_rate_limit_retry(page, CSS_L_CONSENT_BTN, timeout=15000)
     await human_click(page, CSS_L_CONSENT_BTN)
     callback_url = await wait_for_callback_url(page)
 

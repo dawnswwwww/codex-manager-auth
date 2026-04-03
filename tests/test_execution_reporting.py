@@ -44,6 +44,46 @@ class _StaticUrlPage:
         self.url = url
 
 
+class _RateLimitLocator:
+    def __init__(self, page, selector):
+        self.page = page
+        self.selector = selector
+        self.first = self
+
+    async def count(self):
+        return 1 if self.page.has_selector(self.selector) else 0
+
+    async def is_visible(self, timeout=None):
+        return self.page.has_selector(self.selector)
+
+    async def click(self):
+        self.page.retry_clicks += 1
+        self.page.rate_limit_visible = False
+
+
+class _RateLimitPage:
+    def __init__(self):
+        self.rate_limit_visible = True
+        self.retry_clicks = 0
+        self.wait_attempts = 0
+
+    def has_selector(self, selector):
+        if selector in main.RATE_LIMIT_MESSAGE_SELECTORS:
+            return self.rate_limit_visible
+        if selector in main.RATE_LIMIT_RETRY_BUTTON_SELECTORS:
+            return self.rate_limit_visible
+        return False
+
+    def locator(self, selector):
+        return _RateLimitLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        self.wait_attempts += 1
+        if self.wait_attempts == 1:
+            raise RuntimeError("timeout waiting for selector")
+        return object()
+
+
 class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_passes_the_normalized_account_password_into_both_phases(self):
         class _RunPage:
@@ -116,6 +156,15 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "callback"):
             await main.wait_for_callback_url(page, timeout_s=0.01, poll_interval_s=0.0)
+
+    async def test_wait_for_selector_with_rate_limit_retry_clicks_retry_and_retries(self):
+        page = _RateLimitPage()
+
+        with patch.object(main, "human_delay", AsyncMock()):
+            await main.wait_for_selector_with_rate_limit_retry(page, "input[name='email']", timeout=1)
+
+        self.assertEqual(page.retry_clicks, 1)
+        self.assertEqual(page.wait_attempts, 2)
 
 
 class CsvResultTests(unittest.TestCase):
