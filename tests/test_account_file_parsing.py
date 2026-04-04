@@ -153,3 +153,123 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(login_mock.await_args.args[1].email, "alpha@example.com")
         self.assertEqual(login_mock.await_args.args[1].registration_status, "success")
         self.assertEqual(csv_path, expected_csv_path)
+
+    async def test_run_accounts_full_chain_updates_checkpoint_with_final_result(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            final_result = main.AccountExecutionResult(
+                email="alpha@example.com",
+                password="Alpha123000",
+                registration_status="already_exists",
+                login_status="success",
+                error_reason="",
+            )
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "run",
+                AsyncMock(return_value=final_result),
+            ):
+                csv_path = await main.run_accounts_full_chain(accounts_file)
+
+            self.assertEqual(csv_path, expected_csv_path)
+            content = expected_csv_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(
+                content,
+                [
+                    "email,password,registration_status,login_status,error_reason",
+                    "alpha@example.com,Alpha123000,already_exists,success,",
+                ],
+            )
+
+    async def test_run_accounts_full_chain_skips_accounts_that_already_have_token_files(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            token_dir = Path(tmpdir) / "tokens"
+            token_dir.mkdir()
+            (token_dir / "alpha@example.com.json").write_text("{}", encoding="utf-8")
+
+            class _FakeOAuthClient:
+                token_output_dir = token_dir
+
+                def build_token_filename(self, email):
+                    return f"{email}.json"
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "run",
+                AsyncMock(),
+            ) as run_mock, patch.object(
+                app_runner,
+                "OAUTH_CLIENT",
+                _FakeOAuthClient(),
+            ):
+                await main.run_accounts_full_chain(accounts_file)
+
+            run_mock.assert_not_awaited()
+            content = expected_csv_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(
+                content,
+                [
+                    "email,password,registration_status,login_status,error_reason",
+                    "alpha@example.com,Alpha1230000,success,success,",
+                ],
+            )
+
+    async def test_run_accounts_full_chain_stops_after_first_failure(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n"
+                "beta@example.com----Beta123----client-b----refresh-b\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            failure = main.AccountExecutionResult(
+                email="alpha@example.com",
+                password="Alpha123000",
+                registration_status="success",
+                login_status="failed",
+                error_reason="callback timeout",
+            )
+
+            class _FakeOAuthClient:
+                token_output_dir = Path(tmpdir) / "tokens"
+
+                def build_token_filename(self, email):
+                    return f"{email}.json"
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "run",
+                AsyncMock(return_value=failure),
+            ) as run_mock, patch.object(
+                app_runner,
+                "OAUTH_CLIENT",
+                _FakeOAuthClient(),
+            ):
+                await main.run_accounts_full_chain(accounts_file)
+
+            self.assertEqual(run_mock.await_count, 1)

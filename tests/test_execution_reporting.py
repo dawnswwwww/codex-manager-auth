@@ -47,6 +47,20 @@ class _StaticUrlPage:
         self.url = url
 
 
+class _VisibleSelectorPage:
+    def __init__(self, url, visible=None):
+        self.url = url
+        self.visible = visible or {}
+
+    def locator(self, selector):
+        return _ProfileLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        if self.visible.get(selector, False):
+            return object()
+        raise RuntimeError(f"selector not visible: {selector}")
+
+
 class _HardFailurePage:
     def __init__(self, url="https://auth.openai.com/add-phone"):
         self.url = url
@@ -74,6 +88,8 @@ class _ProfileLocator:
         self.page.fills.append((self.selector, value))
 
     async def click(self):
+        if self.selector in self.page.click_failures:
+            raise RuntimeError(f"click failed for {self.selector}")
         self.page.clicks.append(self.selector)
 
     async def press(self, key):
@@ -85,12 +101,17 @@ class _ProfileLocator:
     async def evaluate(self, script, value):
         self.page.evaluated.append((self.selector, value))
 
+    async def focus(self):
+        self.page.focused.append(self.selector)
+
 
 class _ProfilePage:
-    def __init__(self, visible):
+    def __init__(self, visible, click_failures=None):
         self.visible = visible
+        self.click_failures = set(click_failures or [])
         self.fills = []
         self.clicks = []
+        self.focused = []
         self.presses = []
         self.typed = []
         self.evaluated = []
@@ -142,6 +163,71 @@ class _RateLimitPage:
         if self.wait_attempts == 1:
             raise RuntimeError("timeout waiting for selector")
         return object()
+
+
+class _SecondLoginLocator:
+    def __init__(self, page, selector):
+        self.page = page
+        self.selector = selector
+        self.first = self
+
+    async def count(self):
+        if self.selector == main.CSS_OA_NAME_INPUT:
+            return 1 if self.page.state == "profile" else 0
+        if self.selector == main.CSS_L_CODE:
+            return 1 if self.page.state == "code" else 0
+        if self.selector == main.CSS_L_CONSENT_BTN:
+            return 1 if self.page.state == "consent" else 0
+        if self.selector == main.CSS_OA_BIRTHDAY_HIDDEN_INPUT:
+            return 1 if self.page.state == "profile" else 0
+        if self.selector == main.CSS_INVALID_PASSWORD_ERROR:
+            return 1 if self.page.state == "password_error" else 0
+        if self.selector == main.CSS_L_PASSWORDLESS_LOGIN_BTN:
+            return 1 if self.page.state == "password_error" else 0
+        return 0
+
+    async def is_visible(self, timeout=None):
+        return await self.count() > 0
+
+
+class _SecondLoginProfilePage:
+    def __init__(self):
+        self.state = "profile"
+        self.url = "https://auth.openai.com/log-in"
+
+    async def goto(self, url, wait_until=None):
+        self.url = url
+
+    def locator(self, selector):
+        return _SecondLoginLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        if selector in {main.CSS_L_EMAIL, main.CSS_L_PASSWORD}:
+            return object()
+        if selector == main.CSS_L_CODE and self.state == "code":
+            return object()
+        if selector == main.CSS_L_CONSENT_BTN and self.state == "consent":
+            return object()
+        raise RuntimeError(f"selector not visible: {selector}")
+
+
+class _SecondLoginWrongPasswordPage:
+    def __init__(self):
+        self.state = "password_error"
+        self.url = "https://auth.openai.com/log-in/password"
+
+    async def goto(self, url, wait_until=None):
+        self.url = url
+
+    def locator(self, selector):
+        return _SecondLoginLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        if selector in {main.CSS_L_EMAIL, main.CSS_L_PASSWORD}:
+            return object()
+        if selector == main.CSS_L_CODE and self.state == "code":
+            return object()
+        raise RuntimeError(f"selector not visible: {selector}")
 
 
 class _FakeOAuthClient:
@@ -351,6 +437,113 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "Login flow"):
                 await main.openai_login_flow(page, "user@example.com", "Secret123", "token")
 
+    async def test_openai_second_login_handles_profile_page_before_consent(self):
+        page = _SecondLoginProfilePage()
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_fill_profile_age(page_obj, name, age_value, year_value, birthday_value):
+            page_obj.state = "consent"
+            page_obj.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "fill_profile_age",
+            AsyncMock(side_effect=fake_fill_profile_age),
+        ) as fill_mock, patch.object(
+            openai_flows,
+            "submit_verification_code_with_retry",
+            AsyncMock(),
+        ) as submit_mock, patch.object(
+            openai_flows,
+            "wait_for_callback_url",
+            AsyncMock(return_value="http://localhost:2456/auth/callback?code=ok"),
+        ) as callback_mock, patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(return_value=False),
+        ):
+            callback_url = await openai_flows.openai_second_login(
+                page,
+                "user@example.com",
+                "Secret123",
+                "token",
+                "https://auth.openai.com/oauth/authorize?state=session",
+                "http://localhost:2456/auth/callback",
+            )
+
+        self.assertEqual(callback_url, "http://localhost:2456/auth/callback?code=ok")
+        fill_mock.assert_awaited_once()
+        submit_mock.assert_not_awaited()
+        self.assertEqual(callback_mock.await_args.args[1], "http://localhost:2456/auth/callback")
+        self.assertEqual(callback_mock.await_args.kwargs["timeout_s"], 30.0)
+
+    async def test_openai_second_login_falls_back_to_passwordless_code_when_password_is_rejected(self):
+        page = _SecondLoginWrongPasswordPage()
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_human_click(page_obj, selector):
+            if selector == main.CSS_L_PASSWORDLESS_LOGIN_BTN:
+                page_obj.state = "code"
+            return None
+
+        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None):
+            page_obj.state = "consent"
+            page_obj.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+            return "123456"
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(side_effect=fake_human_click),
+        ) as click_mock, patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "submit_verification_code_with_retry",
+            AsyncMock(side_effect=fake_submit),
+        ) as submit_mock, patch.object(
+            openai_flows,
+            "wait_for_callback_url",
+            AsyncMock(return_value="http://localhost:2456/auth/callback?code=ok"),
+        ), patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(return_value=False),
+        ):
+            await openai_flows.openai_second_login(
+                page,
+                "user@example.com",
+                "Secret123",
+                "token",
+                "https://auth.openai.com/oauth/authorize?state=session",
+                "http://localhost:2456/auth/callback",
+            )
+
+        self.assertIn(main.CSS_L_PASSWORDLESS_LOGIN_BTN, [call.args[1] for call in click_mock.await_args_list])
+        submit_mock.assert_awaited()
+
     async def test_execute_stage_with_retry_retries_until_stage_succeeds(self):
         operation = AsyncMock(side_effect=[RuntimeError("first"), None])
 
@@ -409,6 +602,16 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hard_failure_state.status, "hard_failure")
         self.assertIn("phone number", hard_failure_state.detail)
 
+    async def test_get_login_terminal_state_does_not_treat_password_page_continue_button_as_consent(self):
+        page = _VisibleSelectorPage(
+            "https://auth.openai.com/log-in/password",
+            {main.CSS_L_CONSENT_BTN: True},
+        )
+
+        state = await main.get_login_terminal_state(page)
+
+        self.assertIsNone(state)
+
     async def test_fill_profile_age_uses_age_input_when_year_input_is_missing(self):
         page = _ProfilePage(
             {
@@ -419,7 +622,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(openai_flows, "human_delay", AsyncMock()):
-            await main.fill_profile_age(page, "CroffMost", "32", "1994")
+            await main.fill_profile_age(page, "CroffMost", "32", "1994", "1994-06-02")
 
         self.assertEqual(
             page.fills,
@@ -430,6 +633,17 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn((main.CSS_OA_NAME_INPUT, "CroffMost"), page.typed)
         self.assertIn((main.CSS_OA_AGE_INPUT_SELECTORS[0], "32"), page.typed)
+
+    def test_generate_birth_profile_stays_within_required_year_range(self):
+        years = set()
+        for _ in range(200):
+            _, birthday, age, year = openai_flows.generate_birth_profile("BadameWages1225")
+            years.add(int(year))
+            self.assertTrue(1980 <= int(year) <= 2006)
+            self.assertTrue(birthday.startswith(year))
+            self.assertGreaterEqual(int(age), 18)
+
+        self.assertTrue(years)
 
     async def test_fill_profile_age_sets_hidden_birthday_value_for_dropdown_variant(self):
         page = _ProfilePage(
@@ -442,10 +656,27 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(openai_flows, "human_delay", AsyncMock()):
-            await main.fill_profile_age(page, "BadameWages", "33", "1993")
+            await main.fill_profile_age(page, "BadameWages", "33", "1993", "1993-08-14")
 
         self.assertIn((main.CSS_OA_NAME_INPUT, "BadameWages"), page.typed)
-        self.assertIn((main.CSS_OA_BIRTHDAY_HIDDEN_INPUT, "1993-04-04"), page.evaluated)
+        self.assertIn((main.CSS_OA_BIRTHDAY_HIDDEN_INPUT, "1993-08-14"), page.evaluated)
+
+    async def test_fill_profile_age_uses_visible_year_spinbutton_when_present(self):
+        page = _ProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_BIRTHDAY_YEAR: True,
+                main.CSS_OA_BIRTHDAY_HIDDEN_INPUT: True,
+            },
+            click_failures={main.CSS_OA_BIRTHDAY_YEAR},
+        )
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "WaddellFlavia", "27", "1999", "1999-04-04")
+
+        self.assertIn(main.CSS_OA_BIRTHDAY_YEAR, page.focused)
+        self.assertIn((main.CSS_OA_BIRTHDAY_YEAR, "1999"), page.typed)
+        self.assertIn((main.CSS_OA_BIRTHDAY_YEAR, "Tab"), page.presses)
 
 
 class CsvResultTests(unittest.TestCase):

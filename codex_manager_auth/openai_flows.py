@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import random
 import re
 import time
@@ -7,12 +7,14 @@ from .models import NonRetryableStageError, PageTerminalState, RegistrationFlowO
 from .openai_selectors import (
     ADD_PHONE_URL_KEYWORDS,
     CSS_INVALID_CODE_ERROR,
+    CSS_INVALID_PASSWORD_ERROR,
     CSS_L_CODE,
     CSS_L_CONSENT_BTN,
     CSS_L_CONTINUE_CODE,
     CSS_L_CONTINUE_EMAIL,
     CSS_L_CONTINUE_PWD,
     CSS_L_EMAIL,
+    CSS_L_PASSWORDLESS_LOGIN_BTN,
     CSS_L_PASSWORD,
     CSS_OA_BIRTHDAY_HIDDEN_INPUT,
     CSS_OA_ACCOUNT_EXISTS_ERROR,
@@ -79,7 +81,7 @@ async def get_login_terminal_state(page, expected_callback_url: str) -> PageTerm
     if reason:
         return PageTerminalState(status="hard_failure", detail=reason)
 
-    if await is_selector_visible(page, CSS_L_CONSENT_BTN):
+    if "/consent" in page.url and await is_selector_visible(page, CSS_L_CONSENT_BTN):
         return PageTerminalState(status="consent", detail=page.url)
 
     return None
@@ -160,6 +162,17 @@ async def clear_and_type_locator(locator, text: str):
     await human_delay(0.5, 1.0)
 
 
+async def focus_and_type_locator(locator, text: str):
+    await locator.focus()
+    await human_delay(0.2, 0.4)
+    await locator.press("Control+a")
+    await human_delay(0.2, 0.4)
+    await locator.press_sequentially(text, delay=random.randint(80, 150))
+    await human_delay(0.2, 0.4)
+    await locator.press("Tab")
+    await human_delay(0.5, 1.0)
+
+
 async def has_selector(page, selector: str) -> bool:
     try:
         return await page.locator(selector).count() > 0
@@ -180,7 +193,17 @@ async def set_hidden_birthday_value(page, birthday_value: str):
     await human_delay(0.3, 0.6)
 
 
-async def fill_profile_age(page, name: str, age_value: str, year_value: str):
+def generate_birth_profile(local_part: str) -> tuple[str, str, str, str]:
+    name = re.sub(r'\d+', '', local_part)
+    start = date(1980, 1, 1)
+    end = date(2006, 12, 31)
+    birthday = start + timedelta(days=random.randint(0, (end - start).days))
+    today = date.today()
+    age = today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
+    return name, birthday.isoformat(), str(age), str(birthday.year)
+
+
+async def fill_profile_age(page, name: str, age_value: str, year_value: str, birthday_value: str):
     await wait_for_selector_with_rate_limit_retry(page, CSS_OA_NAME_INPUT, timeout=15000)
     name_el = page.locator(CSS_OA_NAME_INPUT)
     await name_el.fill("")
@@ -188,7 +211,7 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str):
     await human_delay(0.5, 1.0)
 
     if await is_selector_visible(page, CSS_OA_BIRTHDAY_YEAR):
-        await clear_and_type_locator(page.locator(CSS_OA_BIRTHDAY_YEAR), year_value)
+        await focus_and_type_locator(page.locator(CSS_OA_BIRTHDAY_YEAR), year_value)
         return
 
     age_selector = await find_visible_selector(page, CSS_OA_AGE_INPUT_SELECTORS)
@@ -199,7 +222,7 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str):
         return
 
     if await has_selector(page, CSS_OA_BIRTHDAY_HIDDEN_INPUT):
-        await set_hidden_birthday_value(page, f"{year_value}-04-04")
+        await set_hidden_birthday_value(page, birthday_value)
         return
 
     raise RuntimeError("Could not find a visible age/year input on the profile page")
@@ -297,13 +320,11 @@ async def openai_register(page, email: str, password: str, access_token: str, au
     await submit_verification_code_with_retry(page, CSS_OA_CODE_INPUT, access_token)
 
     local = email.split("@")[0]
-    name = re.sub(r'\d+', '', local)
-    year = str(random.randint(1990, 1999))
-    age = str(max(18, datetime.now().year - int(year)))
-    print(f"[OpenAI] Confirming age. Name: {name}, Age: {age}, Year: {year}")
+    name, birthday, age, year = generate_birth_profile(local)
+    print(f"[OpenAI] Confirming age. Name: {name}, Birthday: {birthday}, Age: {age}, Year: {year}")
 
     try:
-        await fill_profile_age(page, name, age, year)
+        await fill_profile_age(page, name, age, year, birthday)
     except Exception:
         await page.screenshot(path="debug_age_page.png")
         dump = await page.evaluate("""() => {
@@ -338,9 +359,7 @@ async def openai_login_flow(page, email: str, password: str, access_token: str, 
 
     print("[Login] Detecting next page state...")
     local = email.split("@")[0]
-    name = re.sub(r'\d+', '', local)
-    year = str(random.randint(1990, 1999))
-    age = str(max(18, datetime.now().year - int(year)))
+    name, birthday, age, year = generate_birth_profile(local)
     completed = False
 
     for _ in range(3):
@@ -368,8 +387,8 @@ async def openai_login_flow(page, email: str, password: str, access_token: str, 
             if (await name_el.count() > 0 and await name_el.first.is_visible(timeout=3000)) or \
                (await birthday_el.count() > 0 and await birthday_el.first.is_visible(timeout=3000)) or \
                age_selector:
-                print(f"[Login] Profile page found, name: {name}, age: {age}, year: {year}")
-                await fill_profile_age(page, name, age, year)
+                print(f"[Login] Profile page found, name: {name}, birthday: {birthday}, age: {age}, year: {year}")
+                await fill_profile_age(page, name, age, year, birthday)
 
                 submit_btn = page.locator('button[type="submit"]:has-text("完成帐户创建"), button[type="submit"]:has-text("继续")')
                 if await submit_btn.count() > 0:
@@ -407,20 +426,58 @@ async def openai_second_login(page, email: str, password: str, access_token: str
     await human_type(page, CSS_L_PASSWORD, password)
     await human_click(page, CSS_L_CONTINUE_PWD)
     await human_delay(2, 4)
+    local = email.split("@")[0]
+    name, birthday, age, year = generate_birth_profile(local)
 
-    print("[OpenAI] Waiting for verification code input...")
-    await wait_for_selector_with_rate_limit_retry(page, CSS_L_CODE, timeout=15000)
-    await submit_verification_code_with_retry(
-        page,
-        CSS_L_CODE,
-        access_token,
-        submit_mode="click",
-        submit_selector=CSS_L_CONTINUE_CODE,
-    )
+    for _ in range(4):
+        terminal_state = await get_login_terminal_state(page, expected_callback_url)
+        if terminal_state:
+            if terminal_state.status == "hard_failure":
+                raise NonRetryableStageError(terminal_state.detail)
+            if terminal_state.status == "consent":
+                print("[OpenAI] Waiting for consent page...")
+                await human_click(page, CSS_L_CONSENT_BTN)
+                callback_url = await wait_for_callback_url(page, expected_callback_url, timeout_s=30.0)
+                print(f"[OpenAI] Consent submitted. Final URL: {callback_url}")
+                return callback_url
+            if terminal_state.status == "callback":
+                print(f"[OpenAI] Callback reached directly. Final URL: {terminal_state.detail}")
+                return terminal_state.detail
 
-    print("[OpenAI] Waiting for consent page...")
-    await wait_for_selector_with_rate_limit_retry(page, CSS_L_CONSENT_BTN, timeout=15000)
-    await human_click(page, CSS_L_CONSENT_BTN)
-    callback_url = await wait_for_callback_url(page, expected_callback_url)
-    print(f"[OpenAI] Consent submitted. Final URL: {callback_url}")
-    return callback_url
+        age_selector = await find_visible_selector(page, CSS_OA_AGE_INPUT_SELECTORS)
+        if (
+            await is_selector_visible(page, CSS_OA_NAME_INPUT)
+            or await is_selector_visible(page, CSS_OA_BIRTHDAY_YEAR)
+            or age_selector
+            or await has_selector(page, CSS_OA_BIRTHDAY_HIDDEN_INPUT)
+        ):
+            print(f"[OpenAI] Profile page found during login, name: {name}, birthday: {birthday}, age: {age}, year: {year}")
+            await fill_profile_age(page, name, age, year, birthday)
+            await human_click(page, 'button[type="submit"]:has-text("完成帐户创建"), button[type="submit"]:has-text("继续")')
+            await human_delay(2, 4)
+            continue
+
+        if await is_selector_visible(page, CSS_INVALID_PASSWORD_ERROR) and await is_selector_visible(page, CSS_L_PASSWORDLESS_LOGIN_BTN):
+            print("[OpenAI] Password login was rejected. Falling back to one-time-code login...")
+            await human_click(page, CSS_L_PASSWORDLESS_LOGIN_BTN)
+            await human_delay(2, 4)
+            continue
+
+        if await is_selector_visible(page, CSS_L_CODE):
+            print("[OpenAI] Waiting for verification code input...")
+            await submit_verification_code_with_retry(
+                page,
+                CSS_L_CODE,
+                access_token,
+                submit_mode="click",
+                submit_selector=CSS_L_CONTINUE_CODE,
+            )
+            await human_delay(2, 4)
+            continue
+
+        if await retry_rate_limit_error_page(page):
+            continue
+
+        await human_delay(2, 3)
+
+    raise RuntimeError("Second login flow did not reach a confirmed completion state")

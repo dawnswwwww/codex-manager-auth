@@ -246,5 +246,56 @@ async def run_accounts(accounts_file: Path):
     return csv_path
 
 
+async def run_accounts_full_chain(accounts_file: Path):
+    csv_path = build_checkpoint_csv_path(accounts_file)
+    print(f"[Main] Streaming accounts from {accounts_file}")
+    print(f"[Main] Using checkpoint CSV {csv_path}")
+
+    accounts = list(iter_accounts(accounts_file))
+    total_accounts = len(accounts)
+
+    for index, account in enumerate(accounts, start=1):
+        current_result = find_account_result(csv_path, account.email)
+        if current_result is None:
+            current_result = create_pending_account_result(account)
+            upsert_account_result(csv_path, current_result)
+
+        token_path = OAUTH_CLIENT.token_output_dir / OAUTH_CLIENT.build_token_filename(account.email)
+        if token_path.exists():
+            print(f"[Main] [{index}/{total_accounts}] Token already exists for {account.email}, skipping execution.")
+            synced_result = AccountExecutionResult(
+                email=account.email,
+                password=normalize_password(account.password),
+                registration_status=current_result.registration_status if current_result.registration_status != "pending" else "success",
+                login_status="success",
+                error_reason="",
+                registration_attempts=current_result.registration_attempts,
+                login_attempts=current_result.login_attempts,
+                overall_status="success",
+            )
+            upsert_account_result(csv_path, synced_result)
+            continue
+
+        print(f"[Main] [{index}/{total_accounts}] Full-chain start: {account.email}")
+        result = await run(
+            email=account.email,
+            password=account.password,
+            refresh_token=account.refresh_token,
+            client_id=account.client_id,
+        )
+        upsert_account_result(csv_path, result)
+        token_exists = token_path.exists()
+        print(
+            f"[Main] [{index}/{total_accounts}] Full-chain result: "
+            f"{account.email} reg={result.registration_status} "
+            f"login={result.login_status} token={token_exists}"
+        )
+        if result.login_status != "success" or not token_exists:
+            print(f"[Main] Stopping after failure on {account.email}")
+            break
+
+    return csv_path
+
+
 def main():
     asyncio.run(run_accounts(ACCOUNT_FILE))
