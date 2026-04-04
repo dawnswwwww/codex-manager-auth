@@ -45,6 +45,11 @@ def should_attempt_login(result: AccountExecutionResult) -> bool:
     )
 
 
+def is_disabled_account_result(result: AccountExecutionResult) -> bool:
+    reason = (result.error_reason or "").lower()
+    return "phone number" in reason or "add-phone" in reason
+
+
 async def run_registration_stage(account: AccountRecord) -> AccountExecutionResult:
     password = normalize_password(account.password)
     try:
@@ -291,6 +296,9 @@ async def run_accounts_full_chain(accounts_file: Path):
             f"login={result.login_status} token={token_exists}"
         )
         if result.login_status != "success" or not token_exists:
+            if is_disabled_account_result(result):
+                print(f"[Main] [{index}/{total_accounts}] Disabled account detected for {account.email}, continuing.")
+                continue
             print(f"[Main] Stopping after failure on {account.email}")
             break
 
