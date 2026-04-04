@@ -4,7 +4,7 @@ CSS_OA_CONTINUE_BTN = 'form button[type="submit"][name="intent"]'
 CSS_OA_PASSWORD_INPUT = 'input[type="password"][name="new-password"]'
 CSS_OA_PASSWORD_BTN = 'form:has(input[name="new-password"]) button[type="submit"]'
 CSS_OA_CODE_INPUT = 'input[name="code"]'
-CSS_OA_NAME_INPUT = 'input[name="name"]'
+CSS_OA_NAME_INPUT = 'input[name="name"]:not([type="hidden"])'
 CSS_OA_BIRTHDAY_YEAR = '[data-type="year"]'
 CSS_OA_BIRTHDAY_HIDDEN_INPUT = 'input[name="birthday"]'
 CSS_OA_AGE_INPUT_SELECTORS = (
