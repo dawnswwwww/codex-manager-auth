@@ -5,6 +5,7 @@ import time
 
 from .models import NonRetryableStageError, PageTerminalState, RegistrationFlowOutcome, StageExecutionResult
 from .openai_selectors import (
+    ACCOUNT_DEACTIVATED_MESSAGE_SELECTORS,
     ADD_PHONE_URL_KEYWORDS,
     CSS_INVALID_CODE_ERROR,
     CSS_INVALID_PASSWORD_ERROR,
@@ -65,7 +66,15 @@ def get_hard_failure_reason_from_url(url: str) -> str | None:
 
 
 async def get_hard_failure_reason(page) -> str | None:
-    return get_hard_failure_reason_from_url(getattr(page, "url", ""))
+    reason = get_hard_failure_reason_from_url(getattr(page, "url", ""))
+    if reason:
+        return reason
+
+    account_deactivated_selector = await find_visible_selector(page, ACCOUNT_DEACTIVATED_MESSAGE_SELECTORS)
+    if account_deactivated_selector:
+        return "OpenAI reported account_deactivated during verification"
+
+    return None
 
 
 async def raise_for_hard_failure_page(page):
@@ -490,14 +499,19 @@ async def openai_second_login(page, email: str, password: str, access_token: str
 
         if await is_selector_visible(page, CSS_L_CODE):
             print("[OpenAI] Waiting for verification code input...")
-            await submit_verification_code_with_retry(
-                page,
-                CSS_L_CODE,
-                access_token,
-                submit_mode="click",
-                submit_selector=CSS_L_CONTINUE_CODE,
-                attempted_codes=attempted_codes,
-            )
+            try:
+                await submit_verification_code_with_retry(
+                    page,
+                    CSS_L_CODE,
+                    access_token,
+                    submit_mode="click",
+                    submit_selector=CSS_L_CONTINUE_CODE,
+                    attempted_codes=attempted_codes,
+                )
+            except RuntimeError as exc:
+                if saw_retry_error_page and "Failed to find verification code after max retries" in str(exc):
+                    raise RuntimeError("OpenAI verification session hit max_check_attempts after retries") from exc
+                raise
             await human_delay(2, 4)
             continue
 

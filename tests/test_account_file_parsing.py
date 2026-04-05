@@ -367,3 +367,97 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 await main.run_accounts_full_chain(accounts_file)
 
             self.assertEqual(run_mock.await_count, 2)
+
+    async def test_run_accounts_full_chain_continues_past_transient_auth_navigation_errors(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n"
+                "beta@example.com----Beta123----client-b----refresh-b\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            blocked = main.AccountExecutionResult(
+                email="alpha@example.com",
+                password="Alpha123000",
+                registration_status="failed",
+                login_status="skipped",
+                error_reason="Page.goto: net::ERR_CONNECTION_CLOSED at https://auth.openai.com/oauth/authorize?...",
+            )
+            success = main.AccountExecutionResult(
+                email="beta@example.com",
+                password="Beta123000",
+                registration_status="already_exists",
+                login_status="success",
+                error_reason="",
+            )
+
+            class _FakeOAuthClient:
+                token_output_dir = Path(tmpdir) / "tokens"
+
+                def build_token_filename(self, email):
+                    return f"{email}.json"
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "run",
+                AsyncMock(side_effect=[blocked, success]),
+            ) as run_mock, patch.object(
+                app_runner,
+                "OAUTH_CLIENT",
+                _FakeOAuthClient(),
+            ):
+                await main.run_accounts_full_chain(accounts_file)
+
+            self.assertEqual(run_mock.await_count, 2)
+
+    async def test_run_accounts_full_chain_continues_past_account_deactivated_pages(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n"
+                "beta@example.com----Beta123----client-b----refresh-b\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            blocked = main.AccountExecutionResult(
+                email="alpha@example.com",
+                password="Alpha123000",
+                registration_status="already_exists",
+                login_status="failed",
+                error_reason="OpenAI reported account_deactivated during verification",
+            )
+            success = main.AccountExecutionResult(
+                email="beta@example.com",
+                password="Beta123000",
+                registration_status="already_exists",
+                login_status="success",
+                error_reason="",
+            )
+
+            class _FakeOAuthClient:
+                token_output_dir = Path(tmpdir) / "tokens"
+
+                def build_token_filename(self, email):
+                    return f"{email}.json"
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "run",
+                AsyncMock(side_effect=[blocked, success]),
+            ) as run_mock, patch.object(
+                app_runner,
+                "OAUTH_CLIENT",
+                _FakeOAuthClient(),
+            ):
+                await main.run_accounts_full_chain(accounts_file)
+
+            self.assertEqual(run_mock.await_count, 2)

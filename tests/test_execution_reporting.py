@@ -186,6 +186,19 @@ class _LocalizedRateLimitPage(_RateLimitPage):
         return False
 
 
+class _AccountDeactivatedPage(_RateLimitPage):
+    def __init__(self):
+        super().__init__()
+        self.url = "https://auth.openai.com/email-verification"
+
+    def has_selector(self, selector):
+        if selector == 'text=/account_deactivated/i':
+            return True
+        if selector in main.RATE_LIMIT_RETRY_BUTTON_SELECTORS:
+            return True
+        return False
+
+
 class _SecondLoginLocator:
     def __init__(self, page, selector):
         self.page = page
@@ -785,6 +798,61 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
                     "http://localhost:2456/auth/callback",
                 )
 
+    async def test_openai_second_login_reclassifies_missing_code_after_retry_pages_as_remote_block(self):
+        page = _SecondLoginRetryLoopPage()
+        submit_calls = 0
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None, attempted_codes=None):
+            nonlocal submit_calls
+            submit_calls += 1
+            if submit_calls == 1:
+                attempted_codes.add("111111")
+                page_obj.state = "retry_error"
+                page_obj.url = "https://auth.openai.com/email-verification"
+                return "111111"
+            raise RuntimeError("Failed to find verification code after max retries")
+
+        async def fake_retry(page_obj):
+            if page_obj.state != "retry_error":
+                return False
+            page_obj.state = "code"
+            page_obj.url = "https://auth.openai.com/email-verification"
+            return True
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "submit_verification_code_with_retry",
+            AsyncMock(side_effect=fake_submit),
+        ), patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(side_effect=fake_retry),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "max_check_attempts"):
+                await openai_flows.openai_second_login(
+                    page,
+                    "user@example.com",
+                    "Secret123",
+                    "token",
+                    "https://auth.openai.com/oauth/authorize?state=session",
+                    "http://localhost:2456/auth/callback",
+                )
+
     async def test_openai_second_login_falls_back_to_passwordless_code_when_password_is_rejected(self):
         page = _SecondLoginWrongPasswordPage()
 
@@ -886,6 +954,14 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(retried)
         self.assertEqual(page.retry_clicks, 1)
+
+    async def test_get_login_terminal_state_reports_account_deactivated_as_hard_failure(self):
+        page = _AccountDeactivatedPage()
+
+        state = await openai_flows.get_login_terminal_state(page, "http://localhost:2456/auth/callback")
+
+        self.assertEqual(state.status, "hard_failure")
+        self.assertIn("account_deactivated", state.detail)
 
     async def test_wait_for_selector_with_rate_limit_retry_raises_for_hard_failure_pages(self):
         page = _HardFailurePage()

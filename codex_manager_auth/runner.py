@@ -52,7 +52,19 @@ def is_disabled_account_result(result: AccountExecutionResult) -> bool:
 
 def is_remote_verification_block_result(result: AccountExecutionResult) -> bool:
     reason = (result.error_reason or "").lower()
-    return "max_check_attempts" in reason or "verification session hit" in reason
+    return (
+        "max_check_attempts" in reason
+        or "verification session hit" in reason
+        or "account_deactivated" in reason
+    )
+
+
+def is_transient_auth_navigation_result(result: AccountExecutionResult) -> bool:
+    reason = (result.error_reason or "").lower()
+    return (
+        "page.goto: net::err_connection_closed" in reason
+        or ("page.goto:" in reason and "timeout" in reason)
+    )
 
 
 async def run_registration_stage(account: AccountRecord) -> AccountExecutionResult:
@@ -306,6 +318,9 @@ async def run_accounts_full_chain(accounts_file: Path):
                 continue
             if is_remote_verification_block_result(result):
                 print(f"[Main] [{index}/{total_accounts}] Remote verification block detected for {account.email}, continuing.")
+                continue
+            if is_transient_auth_navigation_result(result):
+                print(f"[Main] [{index}/{total_accounts}] Transient auth navigation failure detected for {account.email}, continuing.")
                 continue
             print(f"[Main] Stopping after failure on {account.email}")
             break

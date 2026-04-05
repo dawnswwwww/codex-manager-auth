@@ -42,6 +42,9 @@ RATE_LIMIT_RETRY_BUTTON_SELECTORS = (
     'button:has-text("重试")',
     'button:has-text("Retry")',
 )
+ACCOUNT_DEACTIVATED_MESSAGE_SELECTORS = (
+    'text=/account_deactivated/i',
+)
 ADD_PHONE_URL_KEYWORDS = (
     "auth.openai.com/add-phone",
     "/add-phone",
