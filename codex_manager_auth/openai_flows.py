@@ -258,8 +258,9 @@ async def submit_verification_code_with_retry(
     submit_mode: str = "enter",
     submit_selector: str | None = None,
     max_attempts: int = 3,
+    attempted_codes: set[str] | None = None,
 ) -> str:
-    attempted_codes: set[str] = set()
+    attempted_codes = attempted_codes if attempted_codes is not None else set()
 
     for _ in range(max_attempts):
         code = await fetch_verification_code(access_token, exclude_codes=set(attempted_codes))
@@ -376,6 +377,7 @@ async def openai_login_flow(page, email: str, password: str, access_token: str, 
     local = email.split("@")[0]
     name, birthday, age, year = generate_birth_profile(local)
     completed = False
+    attempted_codes: set[str] = set()
 
     for _ in range(3):
         terminal_state = await get_login_terminal_state(page, expected_callback_url)
@@ -396,7 +398,7 @@ async def openai_login_flow(page, email: str, password: str, access_token: str, 
         try:
             if await code_el.count() > 0 and await code_el.first.is_visible(timeout=3000):
                 print("[Login] Code page found.")
-                await submit_verification_code_with_retry(page, CSS_L_CODE, access_token)
+                await submit_verification_code_with_retry(page, CSS_L_CODE, access_token, attempted_codes=attempted_codes)
                 continue
         except Exception:
             pass
@@ -446,8 +448,10 @@ async def openai_second_login(page, email: str, password: str, access_token: str
     await human_delay(2, 4)
     local = email.split("@")[0]
     name, birthday, age, year = generate_birth_profile(local)
+    attempted_codes: set[str] = set()
+    saw_retry_error_page = False
 
-    for _ in range(4):
+    for _ in range(8):
         terminal_state = await get_login_terminal_state(page, expected_callback_url)
         if terminal_state:
             if terminal_state.status == "hard_failure":
@@ -492,13 +496,17 @@ async def openai_second_login(page, email: str, password: str, access_token: str
                 access_token,
                 submit_mode="click",
                 submit_selector=CSS_L_CONTINUE_CODE,
+                attempted_codes=attempted_codes,
             )
             await human_delay(2, 4)
             continue
 
         if await retry_rate_limit_error_page(page):
+            saw_retry_error_page = True
             continue
 
         await human_delay(2, 3)
 
+    if saw_retry_error_page:
+        raise RuntimeError("OpenAI verification session hit max_check_attempts after retries")
     raise RuntimeError("Second login flow did not reach a confirmed completion state")

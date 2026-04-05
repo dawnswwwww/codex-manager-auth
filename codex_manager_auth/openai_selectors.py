@@ -34,6 +34,9 @@ CSS_INVALID_PASSWORD_ERROR = 'text=/Incorrect email address or password/i'
 RATE_LIMIT_MESSAGE_SELECTORS = (
     'text=/Rate limit exceeded/i',
     'text=/try again later/i',
+    'text=/糟糕，出错了/i',
+    'text=/验证过程中出错/i',
+    'text=/请重试/i',
 )
 RATE_LIMIT_RETRY_BUTTON_SELECTORS = (
     'button:has-text("重试")',

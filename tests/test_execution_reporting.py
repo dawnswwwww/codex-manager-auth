@@ -177,6 +177,15 @@ class _RateLimitPage:
         return object()
 
 
+class _LocalizedRateLimitPage(_RateLimitPage):
+    def has_selector(self, selector):
+        if selector == 'text=/验证过程中出错/i':
+            return self.rate_limit_visible
+        if selector in main.RATE_LIMIT_RETRY_BUTTON_SELECTORS:
+            return self.rate_limit_visible
+        return False
+
+
 class _SecondLoginLocator:
     def __init__(self, page, selector):
         self.page = page
@@ -264,6 +273,27 @@ class _SecondLoginBirthdayDialogPage:
 
     async def wait_for_selector(self, selector, timeout=None):
         if selector in {main.CSS_L_EMAIL, main.CSS_L_PASSWORD}:
+            return object()
+        if selector == main.CSS_L_CONSENT_BTN and self.state == "consent":
+            return object()
+        raise RuntimeError(f"selector not visible: {selector}")
+
+
+class _SecondLoginRetryLoopPage:
+    def __init__(self):
+        self.state = "code"
+        self.url = "https://auth.openai.com/email-verification"
+
+    async def goto(self, url, wait_until=None):
+        self.url = url
+
+    def locator(self, selector):
+        return _SecondLoginLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        if selector in {main.CSS_L_EMAIL, main.CSS_L_PASSWORD}:
+            return object()
+        if selector == main.CSS_L_CODE and self.state == "code":
             return object()
         if selector == main.CSS_L_CONSENT_BTN and self.state == "consent":
             return object()
@@ -584,6 +614,177 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
             click_mock.await_args_list,
         )
 
+    async def test_openai_second_login_survives_multiple_retry_pages_before_consent(self):
+        page = _SecondLoginRetryLoopPage()
+        submit_attempts = 0
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None, attempted_codes=None):
+            nonlocal submit_attempts
+            submit_attempts += 1
+            if submit_attempts < 3:
+                page_obj.state = "retry_error"
+                page_obj.url = "https://auth.openai.com/email-verification"
+            else:
+                page_obj.state = "consent"
+                page_obj.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+            return "123456"
+
+        async def fake_retry(page_obj):
+            if page_obj.state != "retry_error":
+                return False
+            page_obj.state = "code"
+            page_obj.url = "https://auth.openai.com/email-verification"
+            return True
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "submit_verification_code_with_retry",
+            AsyncMock(side_effect=fake_submit),
+        ), patch.object(
+            openai_flows,
+            "wait_for_callback_url",
+            AsyncMock(return_value="http://localhost:2456/auth/callback?code=ok"),
+        ), patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(side_effect=fake_retry),
+        ):
+            callback_url = await openai_flows.openai_second_login(
+                page,
+                "user@example.com",
+                "Secret123",
+                "token",
+                "https://auth.openai.com/oauth/authorize?state=session",
+                "http://localhost:2456/auth/callback",
+            )
+
+        self.assertEqual(callback_url, "http://localhost:2456/auth/callback?code=ok")
+        self.assertEqual(submit_attempts, 3)
+
+    async def test_openai_second_login_reuses_attempted_codes_after_retry_page(self):
+        page = _SecondLoginRetryLoopPage()
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None, attempted_codes=None):
+            if page_obj.state == "code" and not attempted_codes:
+                attempted_codes.add("111111")
+                page_obj.state = "retry_error"
+                return "111111"
+            self.assertEqual(attempted_codes, {"111111"})
+            page_obj.state = "consent"
+            page_obj.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+            return "222222"
+
+        async def fake_retry(page_obj):
+            if page_obj.state != "retry_error":
+                return False
+            page_obj.state = "code"
+            page_obj.url = "https://auth.openai.com/email-verification"
+            return True
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "submit_verification_code_with_retry",
+            AsyncMock(side_effect=fake_submit),
+        ), patch.object(
+            openai_flows,
+            "wait_for_callback_url",
+            AsyncMock(return_value="http://localhost:2456/auth/callback?code=ok"),
+        ), patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(side_effect=fake_retry),
+        ):
+            callback_url = await openai_flows.openai_second_login(
+                page,
+                "user@example.com",
+                "Secret123",
+                "token",
+                "https://auth.openai.com/oauth/authorize?state=session",
+                "http://localhost:2456/auth/callback",
+            )
+
+        self.assertEqual(callback_url, "http://localhost:2456/auth/callback?code=ok")
+
+    async def test_openai_second_login_reports_max_check_attempts_after_repeated_retry_pages(self):
+        page = _SecondLoginRetryLoopPage()
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None, attempted_codes=None):
+            attempted_codes.add(str(len(attempted_codes) + 1))
+            page_obj.state = "retry_error"
+            page_obj.url = "https://auth.openai.com/email-verification"
+            return "123456"
+
+        async def fake_retry(page_obj):
+            if page_obj.state != "retry_error":
+                return False
+            page_obj.state = "code"
+            page_obj.url = "https://auth.openai.com/email-verification"
+            return True
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "submit_verification_code_with_retry",
+            AsyncMock(side_effect=fake_submit),
+        ), patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(side_effect=fake_retry),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "max_check_attempts"):
+                await openai_flows.openai_second_login(
+                    page,
+                    "user@example.com",
+                    "Secret123",
+                    "token",
+                    "https://auth.openai.com/oauth/authorize?state=session",
+                    "http://localhost:2456/auth/callback",
+                )
+
     async def test_openai_second_login_falls_back_to_passwordless_code_when_password_is_rejected(self):
         page = _SecondLoginWrongPasswordPage()
 
@@ -595,7 +796,7 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
                 page_obj.state = "code"
             return None
 
-        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None):
+        async def fake_submit(page_obj, selector, access_token, submit_mode="enter", submit_selector=None, attempted_codes=None):
             page_obj.state = "consent"
             page_obj.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
             return "123456"
@@ -676,6 +877,15 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(page.retry_clicks, 1)
         self.assertEqual(page.wait_attempts, 2)
+
+    async def test_retry_rate_limit_error_page_handles_localized_error_message(self):
+        page = _LocalizedRateLimitPage()
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            retried = await openai_flows.retry_rate_limit_error_page(page)
+
+        self.assertTrue(retried)
+        self.assertEqual(page.retry_clicks, 1)
 
     async def test_wait_for_selector_with_rate_limit_retry_raises_for_hard_failure_pages(self):
         page = _HardFailurePage()

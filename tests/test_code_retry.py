@@ -58,7 +58,48 @@ class FakePage:
         return False
 
 
+class SuccessfulFakeLocator(FakeLocator):
+    async def press(self, key):
+        self.page.pressed.append((self.selector, key))
+        self.page.submit_count += 1
+        self.page.invalid_code_visible = False
+
+    async def click(self):
+        self.page.clicked.append(self.selector)
+        self.page.submit_count += 1
+        self.page.invalid_code_visible = False
+
+
+class SuccessfulFakePage(FakePage):
+    def locator(self, selector):
+        return SuccessfulFakeLocator(self, selector)
+
+
 class SubmitVerificationCodeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reuses_existing_attempted_codes_across_invocations(self):
+        page = SuccessfulFakePage(main.CSS_INVALID_CODE_ERROR)
+        attempted_codes = {"111111"}
+
+        with patch.object(
+            openai_flows,
+            "fetch_verification_code",
+            AsyncMock(return_value="222222"),
+        ) as fetch_mock, patch.object(openai_flows, "human_type", AsyncMock()), patch.object(
+            openai_flows, "human_delay", AsyncMock()
+        ):
+            final_code = await main.submit_verification_code_with_retry(
+                page=page,
+                selector=main.CSS_OA_CODE_INPUT,
+                access_token="token",
+                submit_mode="enter",
+                max_attempts=1,
+                attempted_codes=attempted_codes,
+            )
+
+        self.assertEqual(final_code, "222222")
+        self.assertEqual(fetch_mock.await_args.kwargs["exclude_codes"], {"111111"})
+        self.assertEqual(attempted_codes, {"111111", "222222"})
+
     async def test_retries_with_newer_code_when_page_reports_invalid_code(self):
         page = FakePage(main.CSS_INVALID_CODE_ERROR)
 

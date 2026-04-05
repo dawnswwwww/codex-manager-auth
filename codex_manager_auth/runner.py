@@ -50,6 +50,11 @@ def is_disabled_account_result(result: AccountExecutionResult) -> bool:
     return "phone number" in reason or "add-phone" in reason
 
 
+def is_remote_verification_block_result(result: AccountExecutionResult) -> bool:
+    reason = (result.error_reason or "").lower()
+    return "max_check_attempts" in reason or "verification session hit" in reason
+
+
 async def run_registration_stage(account: AccountRecord) -> AccountExecutionResult:
     password = normalize_password(account.password)
     try:
@@ -298,6 +303,9 @@ async def run_accounts_full_chain(accounts_file: Path):
         if result.login_status != "success" or not token_exists:
             if is_disabled_account_result(result):
                 print(f"[Main] [{index}/{total_accounts}] Disabled account detected for {account.email}, continuing.")
+                continue
+            if is_remote_verification_block_result(result):
+                print(f"[Main] [{index}/{total_accounts}] Remote verification block detected for {account.email}, continuing.")
                 continue
             print(f"[Main] Stopping after failure on {account.email}")
             break
