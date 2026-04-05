@@ -19,6 +19,7 @@ from .openai_selectors import (
     CSS_OA_BIRTHDAY_HIDDEN_INPUT,
     CSS_OA_ACCOUNT_EXISTS_ERROR,
     CSS_OA_AGE_INPUT_SELECTORS,
+    CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS,
     CSS_OA_BIRTHDAY_YEAR,
     CSS_OA_CODE_INPUT,
     CSS_OA_CONTINUE_BTN,
@@ -212,6 +213,7 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str, bir
 
     if await is_selector_visible(page, CSS_OA_BIRTHDAY_YEAR):
         await focus_and_type_locator(page.locator(CSS_OA_BIRTHDAY_YEAR), year_value)
+        await maybe_confirm_birthday_dialog(page)
         return
 
     age_selector = await find_visible_selector(page, CSS_OA_AGE_INPUT_SELECTORS)
@@ -219,13 +221,26 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str, bir
         age_el = page.locator(age_selector)
         await age_el.fill("")
         await clear_and_type_locator(age_el, age_value)
+        await maybe_confirm_birthday_dialog(page)
         return
 
     if await has_selector(page, CSS_OA_BIRTHDAY_HIDDEN_INPUT):
         await set_hidden_birthday_value(page, birthday_value)
+        await maybe_confirm_birthday_dialog(page)
         return
 
     raise RuntimeError("Could not find a visible age/year input on the profile page")
+
+
+async def maybe_confirm_birthday_dialog(page) -> bool:
+    confirm_selector = await find_visible_selector(page, CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS)
+    if not confirm_selector:
+        return False
+
+    print("[OpenAI] Birthday confirmation dialog detected. Confirming...")
+    await human_click(page, confirm_selector)
+    await human_delay(1, 2)
+    return True
 
 
 async def has_invalid_code_error(page) -> bool:
@@ -370,6 +385,9 @@ async def openai_login_flow(page, email: str, password: str, access_token: str, 
             completed = True
             break
 
+        if await maybe_confirm_birthday_dialog(page):
+            continue
+
         code_el = page.locator(CSS_L_CODE)
         name_el = page.locator(CSS_OA_NAME_INPUT)
         birthday_el = page.locator(CSS_OA_BIRTHDAY_YEAR)
@@ -443,6 +461,9 @@ async def openai_second_login(page, email: str, password: str, access_token: str
             if terminal_state.status == "callback":
                 print(f"[OpenAI] Callback reached directly. Final URL: {terminal_state.detail}")
                 return terminal_state.detail
+
+        if await maybe_confirm_birthday_dialog(page):
+            continue
 
         age_selector = await find_visible_selector(page, CSS_OA_AGE_INPUT_SELECTORS)
         if (

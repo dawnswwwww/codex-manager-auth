@@ -8,9 +8,15 @@ CSS_OA_NAME_INPUT = 'input[name="name"]:not([type="hidden"])'
 CSS_OA_BIRTHDAY_YEAR = '[data-type="year"]'
 CSS_OA_BIRTHDAY_HIDDEN_INPUT = 'input[name="birthday"]'
 CSS_OA_AGE_INPUT_SELECTORS = (
-    'input[name="age"]',
+    'input[name="age"]:not([type="hidden"])',
     'input[aria-label="年龄"]',
     'input[placeholder*="年龄"]',
+)
+CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS = (
+    '[role="dialog"] button:has-text("确定")',
+    '[role="dialog"] button:has-text("Confirm")',
+    'button:has-text("确定")',
+    'button:has-text("Confirm")',
 )
 CSS_OA_CREATE_ACCOUNT_BTN = 'button[type="submit"]:has-text("完成帐户创建")'
 CSS_OA_ACCOUNT_EXISTS_ERROR = 'li:has-text("已存在")'

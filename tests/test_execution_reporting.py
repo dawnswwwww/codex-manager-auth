@@ -125,6 +125,18 @@ class _ProfilePage:
         raise RuntimeError(f"selector not visible: {selector}")
 
 
+class _StrictAgeProfileLocator(_ProfileLocator):
+    async def fill(self, value):
+        if self.selector == 'input[name="age"]':
+            raise RuntimeError('strict mode violation: locator("input[name=\\"age\\"]") resolved to 2 elements')
+        await super().fill(value)
+
+
+class _StrictAgeProfilePage(_ProfilePage):
+    def locator(self, selector):
+        return _StrictAgeProfileLocator(self, selector)
+
+
 class _RateLimitLocator:
     def __init__(self, page, selector):
         self.page = page
@@ -226,6 +238,34 @@ class _SecondLoginWrongPasswordPage:
         if selector in {main.CSS_L_EMAIL, main.CSS_L_PASSWORD}:
             return object()
         if selector == main.CSS_L_CODE and self.state == "code":
+            return object()
+        raise RuntimeError(f"selector not visible: {selector}")
+
+
+class _SecondLoginBirthdayDialogLocator(_SecondLoginLocator):
+    async def count(self):
+        if self.selector in openai_flows.CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS:
+            return 1 if self.page.state == "birthday_dialog" else 0
+        if self.selector == main.CSS_OA_AGE_INPUT_SELECTORS[0]:
+            return 1 if self.page.state == "birthday_dialog" else 0
+        return await super().count()
+
+
+class _SecondLoginBirthdayDialogPage:
+    def __init__(self):
+        self.state = "birthday_dialog"
+        self.url = "https://auth.openai.com/about-you"
+
+    async def goto(self, url, wait_until=None):
+        self.url = url
+
+    def locator(self, selector):
+        return _SecondLoginBirthdayDialogLocator(self, selector)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        if selector in {main.CSS_L_EMAIL, main.CSS_L_PASSWORD}:
+            return object()
+        if selector == main.CSS_L_CONSENT_BTN and self.state == "consent":
             return object()
         raise RuntimeError(f"selector not visible: {selector}")
 
@@ -491,6 +531,59 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(callback_mock.await_args.args[1], "http://localhost:2456/auth/callback")
         self.assertEqual(callback_mock.await_args.kwargs["timeout_s"], 30.0)
 
+    async def test_openai_second_login_confirms_birthday_dialog_before_refilling_profile(self):
+        page = _SecondLoginBirthdayDialogPage()
+
+        async def fake_wait(page_obj, selector, timeout=15000):
+            return await page_obj.wait_for_selector(selector, timeout=timeout)
+
+        async def fake_human_click(page_obj, selector):
+            if selector in openai_flows.CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS:
+                page_obj.state = "consent"
+                page_obj.url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+            return None
+
+        with patch.object(openai_flows, "wait_for_selector_with_rate_limit_retry", AsyncMock(side_effect=fake_wait)), patch.object(
+            openai_flows,
+            "human_type",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "human_click",
+            AsyncMock(side_effect=fake_human_click),
+        ) as click_mock, patch.object(
+            openai_flows,
+            "human_delay",
+            AsyncMock(),
+        ), patch.object(
+            openai_flows,
+            "fill_profile_age",
+            AsyncMock(side_effect=AssertionError("birthday dialog should be confirmed before refilling profile")),
+        ) as fill_mock, patch.object(
+            openai_flows,
+            "wait_for_callback_url",
+            AsyncMock(return_value="http://localhost:2456/auth/callback?code=ok"),
+        ), patch.object(
+            openai_flows,
+            "retry_rate_limit_error_page",
+            AsyncMock(return_value=False),
+        ):
+            callback_url = await openai_flows.openai_second_login(
+                page,
+                "user@example.com",
+                "Secret123",
+                "token",
+                "https://auth.openai.com/oauth/authorize?state=session",
+                "http://localhost:2456/auth/callback",
+            )
+
+        self.assertEqual(callback_url, "http://localhost:2456/auth/callback?code=ok")
+        fill_mock.assert_not_awaited()
+        self.assertIn(
+            unittest.mock.call(page, openai_flows.CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS[0]),
+            click_mock.await_args_list,
+        )
+
     async def test_openai_second_login_falls_back_to_passwordless_code_when_password_is_rejected(self):
         page = _SecondLoginWrongPasswordPage()
 
@@ -633,6 +726,36 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn((main.CSS_OA_NAME_INPUT, "CroffMost"), page.typed)
         self.assertIn((main.CSS_OA_AGE_INPUT_SELECTORS[0], "32"), page.typed)
+
+    async def test_fill_profile_age_ignores_hidden_age_inputs(self):
+        page = _StrictAgeProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_AGE_INPUT_SELECTORS[0]: True,
+                main.CSS_OA_BIRTHDAY_YEAR: False,
+            }
+        )
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "SkibaFarug", "24", "2002", "2002-04-05")
+
+        self.assertIn((main.CSS_OA_AGE_INPUT_SELECTORS[0], ""), page.fills)
+        self.assertIn((main.CSS_OA_AGE_INPUT_SELECTORS[0], "24"), page.typed)
+
+    async def test_fill_profile_age_confirms_birthday_dialog_when_present(self):
+        page = _ProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_AGE_INPUT_SELECTORS[0]: True,
+                main.CSS_OA_BIRTHDAY_YEAR: False,
+                'button:has-text("确定")': True,
+            }
+        )
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "SkibaFarug", "24", "2002", "2002-04-05")
+
+        self.assertIn('button:has-text("确定")', page.clicks)
 
     def test_generate_birth_profile_stays_within_required_year_range(self):
         years = set()
