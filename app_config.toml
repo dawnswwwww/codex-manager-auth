@@ -1,4 +1,6 @@
-account_file = "accout/宝贝信息-985260403233027741.txt"
+account_file = "accout/new_10_account.txt"
 oauth_client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 oauth_redirect_port = 1455
 token_output_dir = "tokens"
+mail_api_provider = "oauth"
+mail_refresh_scope = ""
