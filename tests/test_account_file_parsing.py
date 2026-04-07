@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import AsyncMock, patch, call
+from unittest.mock import AsyncMock, patch
 
 import main
 from codex_manager_auth import runner as app_runner
@@ -76,7 +76,7 @@ class AccountFileParsingTests(unittest.TestCase):
 
 
 class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_accounts_streams_account_file_and_logs_in_eligible_rows_from_checkpoint(self):
+    async def test_run_accounts_delegates_to_full_chain_execution(self):
         with TemporaryDirectory() as tmpdir:
             accounts_file = Path(tmpdir) / "accounts.txt"
             accounts_file.write_text(
@@ -85,73 +85,14 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             expected_csv_path = Path(tmpdir) / "checkpoint.csv"
-            alpha_account = main.AccountRecord(
-                email="alpha@example.com",
-                password="Alpha123",
-                client_id="client-a",
-                refresh_token="refresh-a",
-            )
-            beta_account = main.AccountRecord(
-                email="beta@example.com",
-                password="Beta123",
-                client_id="client-b",
-                refresh_token="refresh-b",
-            )
-
             with patch.object(
-                main,
-                "load_accounts",
-                side_effect=AssertionError("run_accounts should stream the account file instead of calling load_accounts"),
-            ) as load_accounts_mock, patch.object(
                 app_runner,
-                "run_registration_stage",
-                AsyncMock(side_effect=[
-                    main.AccountExecutionResult(
-                        email="alpha@example.com",
-                        password="Alpha123000",
-                        registration_status="success",
-                        login_status="pending",
-                        error_reason="",
-                    ),
-                    main.AccountExecutionResult(
-                        email="beta@example.com",
-                        password="Beta123000",
-                        registration_status="failed",
-                        login_status="skipped",
-                        error_reason="",
-                    ),
-                ]),
-            ) as registration_mock, patch.object(
-                app_runner,
-                "run_login_stage",
-                AsyncMock(
-                    return_value=main.AccountExecutionResult(
-                        email="alpha@example.com",
-                        password="Alpha123000",
-                        registration_status="success",
-                        login_status="success",
-                        error_reason="",
-                    )
-                ),
-            ) as login_mock, patch.object(
-                app_runner,
-                "build_checkpoint_csv_path",
-                return_value=expected_csv_path,
-            ):
+                "run_accounts_full_chain",
+                AsyncMock(return_value=expected_csv_path),
+            ) as full_chain_mock:
                 csv_path = await main.run_accounts(accounts_file)
 
-        load_accounts_mock.assert_not_called()
-        self.assertEqual(
-            registration_mock.await_args_list,
-            [
-                call(alpha_account),
-                call(beta_account),
-            ],
-        )
-        login_mock.assert_awaited_once()
-        self.assertEqual(login_mock.await_args.args[0], alpha_account)
-        self.assertEqual(login_mock.await_args.args[1].email, "alpha@example.com")
-        self.assertEqual(login_mock.await_args.args[1].registration_status, "success")
+        full_chain_mock.assert_awaited_once_with(accounts_file)
         self.assertEqual(csv_path, expected_csv_path)
 
     async def test_run_accounts_full_chain_updates_checkpoint_with_final_result(self):
@@ -320,7 +261,6 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 await main.run_accounts_full_chain(accounts_file)
 
             self.assertEqual(run_mock.await_count, 2)
-
     async def test_run_accounts_full_chain_continues_past_remote_verification_blocks(self):
         with TemporaryDirectory() as tmpdir:
             accounts_file = Path(tmpdir) / "accounts.txt"
@@ -367,7 +307,6 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 await main.run_accounts_full_chain(accounts_file)
 
             self.assertEqual(run_mock.await_count, 2)
-
     async def test_run_accounts_full_chain_continues_past_transient_auth_navigation_errors(self):
         with TemporaryDirectory() as tmpdir:
             accounts_file = Path(tmpdir) / "accounts.txt"
@@ -414,7 +353,6 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 await main.run_accounts_full_chain(accounts_file)
 
             self.assertEqual(run_mock.await_count, 2)
-
     async def test_run_accounts_full_chain_continues_past_account_deactivated_pages(self):
         with TemporaryDirectory() as tmpdir:
             accounts_file = Path(tmpdir) / "accounts.txt"
@@ -461,3 +399,25 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 await main.run_accounts_full_chain(accounts_file)
 
             self.assertEqual(run_mock.await_count, 2)
+
+
+class MainEntrypointTests(unittest.TestCase):
+    def test_main_uses_full_chain_runner(self):
+        observed = {}
+
+        async def fake_full_chain(accounts_file):
+            observed["accounts_file"] = accounts_file
+            return Path("/tmp/checkpoint.csv")
+
+        with patch.object(
+            app_runner,
+            "run_accounts",
+            AsyncMock(side_effect=AssertionError("main should not use split-stage account execution")),
+        ), patch.object(
+            app_runner,
+            "run_accounts_full_chain",
+            fake_full_chain,
+        ):
+            main.main()
+
+        self.assertEqual(observed["accounts_file"], app_runner.ACCOUNT_FILE)

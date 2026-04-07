@@ -229,43 +229,7 @@ async def run(email: str, password: str, refresh_token: str, client_id: str):
 
 
 async def run_accounts(accounts_file: Path):
-    csv_path = build_checkpoint_csv_path(accounts_file)
-    print(f"[Main] Streaming accounts from {accounts_file}")
-    print(f"[Main] Using checkpoint CSV {csv_path}")
-
-    registration_count = 0
-    for account in iter_accounts(accounts_file):
-        registration_count += 1
-        current_result = find_account_result(csv_path, account.email)
-        if current_result is None:
-            current_result = create_pending_account_result(account)
-            upsert_account_result(csv_path, current_result)
-
-        print(f"[Main] Registration phase account {registration_count}: {account.email}")
-        if current_result.registration_status in LOGIN_ELIGIBLE_REGISTRATION_STATUSES:
-            print(f"[Main] Registration already completed for {account.email}, skipping.")
-            continue
-
-        registration_result = await run_registration_stage(account)
-        upsert_account_result(csv_path, registration_result)
-
-    if registration_count == 0:
-        raise ValueError(f"No accounts found in {accounts_file}")
-
-    login_count = 0
-    for account in iter_accounts(accounts_file):
-        current_result = find_account_result(csv_path, account.email)
-        if current_result is None:
-            raise RuntimeError(f"Checkpoint row missing for account: {account.email}")
-        if not should_attempt_login(current_result):
-            continue
-
-        login_count += 1
-        print(f"[Main] Login phase account {login_count}: {account.email}")
-        login_result = await run_login_stage(account, current_result)
-        upsert_account_result(csv_path, login_result)
-
-    return csv_path
+    return await run_accounts_full_chain(accounts_file)
 
 
 async def run_accounts_full_chain(accounts_file: Path):
@@ -329,4 +293,4 @@ async def run_accounts_full_chain(accounts_file: Path):
 
 
 def main():
-    asyncio.run(run_accounts(ACCOUNT_FILE))
+    asyncio.run(run_accounts_full_chain(ACCOUNT_FILE))
