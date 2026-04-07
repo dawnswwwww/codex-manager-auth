@@ -23,6 +23,25 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(config.account_file, (config_file.parent / "accounts.txt").resolve())
         self.assertEqual(config.oauth_client_id, "client-123")
         self.assertEqual(config.oauth_redirect_port, 2456)
+        self.assertEqual(config.mail_api_provider, "outlook_rest")
+        self.assertEqual(config.mail_refresh_scope, "")
+
+    def test_load_app_config_normalizes_mail_provider_and_scope(self):
+        import app_config
+
+        with TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "app_config.toml"
+            config_file.write_text(
+                'account_file = "accounts.txt"\n'
+                'mail_api_provider = "oauth"\n'
+                'mail_refresh_scope = "https://graph.microsoft.com/Mail.Read offline_access"\n',
+                encoding="utf-8",
+            )
+
+            config = app_config.load_app_config(config_file)
+
+        self.assertEqual(config.mail_api_provider, "outlook_rest")
+        self.assertEqual(config.mail_refresh_scope, "https://graph.microsoft.com/Mail.Read offline_access")
 
     def test_main_uses_values_loaded_from_config_file(self):
         import app_config

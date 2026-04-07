@@ -15,7 +15,7 @@ from .config import APP_CONFIG
 from .models import AccountExecutionResult, AccountRecord, RegistrationFlowOutcome
 from .openai_flows import execute_stage_with_retry, openai_register, openai_second_login, verify_registration_complete
 from .openai_oauth import DEFAULT_SCOPE, OpenAIOAuthClient
-from .outlook_mail import exchange_refresh_token
+from .microsoft_oauth import exchange_refresh_token
 from .playwright_helpers import close_page_quietly, launch_browser_and_context, new_stealth_page
 
 
@@ -110,7 +110,11 @@ async def run_registration_stage(
     oauth_client = oauth_client or OAUTH_CLIENT
     password = normalize_password(account.password)
     try:
-        access_token = await exchange_refresh_token(account.refresh_token, account.client_id)
+        access_token = await exchange_refresh_token(
+            account.refresh_token,
+            account.client_id,
+            scope=APP_CONFIG.mail_refresh_scope,
+        )
     except Exception as exc:
         return AccountExecutionResult(
             email=account.email,
@@ -180,7 +184,11 @@ async def run_login_stage(
     oauth_client = oauth_client or OAUTH_CLIENT
     password = normalize_password(account.password)
     try:
-        access_token = await exchange_refresh_token(account.refresh_token, account.client_id)
+        access_token = await exchange_refresh_token(
+            account.refresh_token,
+            account.client_id,
+            scope=APP_CONFIG.mail_refresh_scope,
+        )
     except Exception as exc:
         return AccountExecutionResult(
             email=account.email,

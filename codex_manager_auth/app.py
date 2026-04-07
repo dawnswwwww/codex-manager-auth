@@ -70,7 +70,8 @@ from .openai_selectors import (
     RATE_LIMIT_MESSAGE_SELECTORS,
     RATE_LIMIT_RETRY_BUTTON_SELECTORS,
 )
-from .outlook_mail import exchange_refresh_token, fetch_verification_code
+from .microsoft_mail_api import fetch_verification_code
+from .microsoft_oauth import exchange_refresh_token
 from .playwright_helpers import (
     close_page_quietly,
     find_visible_selector,
