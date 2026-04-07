@@ -137,6 +137,26 @@ class _StrictAgeProfilePage(_ProfilePage):
         return _StrictAgeProfileLocator(self, selector)
 
 
+class _MaskedBirthdayProfileLocator(_ProfileLocator):
+    async def press_sequentially(self, text, delay=None):
+        if self.selector in main.CSS_OA_BIRTHDAY_INPUT_SELECTORS:
+            digits = "".join(ch for ch in text if ch.isdigit())
+            if "/" in text:
+                self.page.birthday_value = f"{digits[:4]}/月/日"
+            elif len(digits) == 8:
+                self.page.birthday_value = f"{digits[:4]}/{digits[4:6]}/{digits[6:8]}"
+        await super().press_sequentially(text, delay=delay)
+
+
+class _MaskedBirthdayProfilePage(_ProfilePage):
+    def __init__(self, visible, click_failures=None):
+        super().__init__(visible, click_failures=click_failures)
+        self.birthday_value = ""
+
+    def locator(self, selector):
+        return _MaskedBirthdayProfileLocator(self, selector)
+
+
 class _RateLimitLocator:
     def __init__(self, page, selector):
         self.page = page
@@ -1168,7 +1188,24 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((main.CSS_OA_NAME_INPUT, "KanoaDaggett"), page.typed)
         self.assertIn(main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], page.clicks)
         self.assertIn((main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], "Control+a"), page.presses)
-        self.assertIn((main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], "1999/04/07"), page.typed)
+        self.assertIn((main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], "19990407"), page.typed)
+        self.assertIn((main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], "Tab"), page.presses)
+
+    async def test_fill_profile_age_uses_digits_for_masked_birthday_input(self):
+        page = _MaskedBirthdayProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_BIRTHDAY_YEAR: False,
+                main.CSS_OA_AGE_INPUT_SELECTORS[0]: False,
+                main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0]: True,
+                main.CSS_OA_BIRTHDAY_HIDDEN_INPUT: False,
+            }
+        )
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "NormFoxwell", "31", "1993", "1993-04-07")
+
+        self.assertEqual(page.birthday_value, "1993/04/07")
 
     async def test_fill_profile_age_uses_visible_year_spinbutton_when_present(self):
         page = _ProfilePage(

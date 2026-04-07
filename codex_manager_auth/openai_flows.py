@@ -194,6 +194,17 @@ async def focus_and_type_locator(locator, text: str):
     await human_delay(0.5, 1.0)
 
 
+async def clear_and_type_masked_birthday_locator(locator, birthday_value: str):
+    await locator.click()
+    await human_delay(0.3, 0.6)
+    await locator.press("Control+a")
+    await human_delay(0.2, 0.4)
+    await locator.press_sequentially(birthday_value.replace("-", ""), delay=random.randint(80, 150))
+    await human_delay(0.2, 0.4)
+    await locator.press("Tab")
+    await human_delay(0.5, 1.0)
+
+
 async def has_selector(page, selector: str) -> bool:
     try:
         return await page.locator(selector).count() > 0
@@ -247,7 +258,7 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str, bir
     birthday_selector = await find_visible_selector(page, CSS_OA_BIRTHDAY_INPUT_SELECTORS)
     if birthday_selector:
         birthday_el = page.locator(birthday_selector)
-        await clear_and_type_locator(birthday_el, birthday_value.replace("-", "/"))
+        await clear_and_type_masked_birthday_locator(birthday_el, birthday_value)
         await maybe_confirm_birthday_dialog(page)
         return
 
