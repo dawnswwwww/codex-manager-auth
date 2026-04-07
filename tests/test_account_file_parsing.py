@@ -279,6 +279,48 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(run_mock.await_count, 1)
 
+    async def test_run_accounts_full_chain_raises_on_terminal_failure_when_requested(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "accounts.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n"
+                "beta@example.com----Beta123----client-b----refresh-b\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            failure = main.AccountExecutionResult(
+                email="alpha@example.com",
+                password="Alpha123000",
+                registration_status="success",
+                login_status="failed",
+                error_reason="callback timeout",
+            )
+
+            class _FakeOAuthClient:
+                client_id = "client-123"
+                redirect_port = 2456
+                scope = "openid profile"
+                token_output_dir = Path(tmpdir) / "tokens"
+
+                def build_token_filename(self, email):
+                    return f"{email}.json"
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "run",
+                AsyncMock(return_value=failure),
+            ), patch.object(
+                app_runner,
+                "OAUTH_CLIENT",
+                _FakeOAuthClient(),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "alpha@example.com: callback timeout"):
+                    await main.run_accounts_full_chain(accounts_file, raise_on_failure=True)
+
     async def test_run_accounts_full_chain_continues_past_disabled_accounts(self):
         with TemporaryDirectory() as tmpdir:
             accounts_file = Path(tmpdir) / "accounts.txt"
@@ -469,8 +511,9 @@ class MainEntrypointTests(unittest.TestCase):
     def test_main_uses_full_chain_runner(self):
         observed = {}
 
-        async def fake_full_chain(accounts_file):
+        async def fake_full_chain(accounts_file, raise_on_failure=False):
             observed["accounts_file"] = accounts_file
+            observed["raise_on_failure"] = raise_on_failure
             return Path("/tmp/checkpoint.csv")
 
         with patch.object(
@@ -485,3 +528,4 @@ class MainEntrypointTests(unittest.TestCase):
             main.main()
 
         self.assertEqual(observed["accounts_file"], app_runner.ACCOUNT_FILE)
+        self.assertTrue(observed["raise_on_failure"])

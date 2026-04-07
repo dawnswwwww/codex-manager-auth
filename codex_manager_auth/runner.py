@@ -96,6 +96,13 @@ def is_transient_auth_navigation_result(result: AccountExecutionResult) -> bool:
     )
 
 
+def build_terminal_failure_error(account: AccountRecord, result: AccountExecutionResult) -> RuntimeError:
+    reason = result.error_reason or (
+        f"registration={result.registration_status} login={result.login_status}"
+    )
+    return RuntimeError(f"{account.email}: {reason}")
+
+
 async def run_registration_stage(
     account: AccountRecord,
     oauth_client: OpenAIOAuthClient | None = None,
@@ -277,7 +284,7 @@ async def run_accounts(accounts_file: Path):
     return await run_accounts_full_chain(accounts_file)
 
 
-async def run_accounts_full_chain(accounts_file: Path):
+async def run_accounts_full_chain(accounts_file: Path, raise_on_failure: bool = False):
     csv_path = build_checkpoint_csv_path(accounts_file)
     batch_oauth_client = build_batch_oauth_client(accounts_file)
     print(f"[Main] Streaming accounts from {accounts_file}")
@@ -335,10 +342,12 @@ async def run_accounts_full_chain(accounts_file: Path):
                 print(f"[Main] [{index}/{total_accounts}] Transient auth navigation failure detected for {account.email}, continuing.")
                 continue
             print(f"[Main] Stopping after failure on {account.email}")
+            if raise_on_failure:
+                raise build_terminal_failure_error(account, result)
             break
 
     return csv_path
 
 
 def main():
-    asyncio.run(run_accounts_full_chain(ACCOUNT_FILE))
+    asyncio.run(run_accounts_full_chain(ACCOUNT_FILE, raise_on_failure=True))
