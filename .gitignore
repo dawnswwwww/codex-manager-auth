@@ -15,3 +15,4 @@ error_*.png
 debug_*.png
 results/
 tokens/
+.idea

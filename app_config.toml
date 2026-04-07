@@ -4,3 +4,6 @@ oauth_redirect_port = 1455
 token_output_dir = "tokens"
 mail_api_provider = "oauth"
 mail_refresh_scope = ""
+
+#mail_api_provider = "graph"
+#mail_refresh_scope = "https://graph.microsoft.com/Mail.Read offline_access"
