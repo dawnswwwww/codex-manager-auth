@@ -14,6 +14,7 @@ codex_manager_auth/
   microsoft_oauth.py
   microsoft_mail_api.py
   mail_providers.py
+  callback_server.py
   outlook_mail.py
   openai_oauth.py
   openai_flows.py
@@ -35,6 +36,7 @@ tests/
 - `codex_manager_auth/microsoft_oauth.py`: Microsoft OAuth2 refresh-token exchange.
 - `codex_manager_auth/microsoft_mail_api.py`: mailbox polling via Outlook REST or Microsoft Graph.
 - `codex_manager_auth/mail_providers.py`: provider normalization and aliases (`outlook_rest` / `graph`, with `oauth` accepted as the legacy Outlook REST alias).
+- `codex_manager_auth/callback_server.py`: local HTTP callback receiver for the OAuth redirect.
 - `codex_manager_auth/outlook_mail.py`: backward-compatible export shim for the split Microsoft auth/mail helpers.
 - `codex_manager_auth/openai_oauth.py`: OAuth PKCE generation, callback parsing, token exchange, token file output.
 - `codex_manager_auth/openai_flows.py`: OpenAI page flow logic, retries, hard-failure detection, verification handling.
@@ -57,6 +59,8 @@ Microsoft mailbox access is now split cleanly:
 - OAuth2 refresh-token exchange is handled separately from mailbox API access.
 - `mail_api_provider` selects the mailbox backend: `outlook_rest` or `graph` (`oauth` is accepted as a legacy alias for `outlook_rest`).
 - `mail_refresh_scope` is optional. Leave it empty to refresh with the original grant. Set it explicitly only when your Microsoft app registration really needs a specific scope string.
+
+The login stage now starts a local callback server on the configured redirect port before submitting consent, so the browser lands on a live `http://localhost:<port>/auth/callback` endpoint instead of a refused connection page.
 
 ## Test
 

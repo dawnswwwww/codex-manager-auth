@@ -18,6 +18,7 @@ from .openai_selectors import (
     CSS_L_PASSWORDLESS_LOGIN_BTN,
     CSS_L_PASSWORD,
     CSS_OA_BIRTHDAY_HIDDEN_INPUT,
+    CSS_OA_BIRTHDAY_INPUT_SELECTORS,
     CSS_OA_ACCOUNT_EXISTS_ERROR,
     CSS_OA_AGE_INPUT_SELECTORS,
     CSS_OA_BIRTHDAY_CONFIRM_BUTTON_SELECTORS,
@@ -113,12 +114,22 @@ async def wait_for_selector_with_rate_limit_retry(page, selector: str, timeout: 
         return await page.wait_for_selector(selector, timeout=timeout)
 
 
-async def wait_for_callback_url(page, expected_callback_url: str, timeout_s: float = 15.0, poll_interval_s: float = 0.2) -> str:
+async def wait_for_callback_url(
+    page,
+    expected_callback_url: str,
+    timeout_s: float = 15.0,
+    poll_interval_s: float = 0.2,
+    callback_server=None,
+) -> str:
     deadline = time.monotonic() + timeout_s
 
     while time.monotonic() <= deadline:
         if page.url.startswith(expected_callback_url):
             return page.url
+        if callback_server:
+            callback_url = callback_server.get_callback_url()
+            if callback_url:
+                return callback_url
         await raise_for_hard_failure_page(page)
         await human_delay(poll_interval_s, poll_interval_s)
 
@@ -230,6 +241,13 @@ async def fill_profile_age(page, name: str, age_value: str, year_value: str, bir
         age_el = page.locator(age_selector)
         await age_el.fill("")
         await clear_and_type_locator(age_el, age_value)
+        await maybe_confirm_birthday_dialog(page)
+        return
+
+    birthday_selector = await find_visible_selector(page, CSS_OA_BIRTHDAY_INPUT_SELECTORS)
+    if birthday_selector:
+        birthday_el = page.locator(birthday_selector)
+        await clear_and_type_locator(birthday_el, birthday_value.replace("-", "/"))
         await maybe_confirm_birthday_dialog(page)
         return
 
@@ -439,7 +457,15 @@ async def openai_login_flow(page, email: str, password: str, access_token: str, 
     print("[Login] Login flow complete.")
 
 
-async def openai_second_login(page, email: str, password: str, access_token: str, auth_url: str, expected_callback_url: str):
+async def openai_second_login(
+    page,
+    email: str,
+    password: str,
+    access_token: str,
+    auth_url: str,
+    expected_callback_url: str,
+    callback_server=None,
+):
     print("[OpenAI] Phase 2: Re-visiting OAuth URL to login...")
     await page.goto(auth_url, wait_until="domcontentloaded")
     await human_delay(2, 4)
@@ -468,7 +494,12 @@ async def openai_second_login(page, email: str, password: str, access_token: str
             if terminal_state.status == "consent":
                 print("[OpenAI] Waiting for consent page...")
                 await human_click(page, CSS_L_CONSENT_BTN)
-                callback_url = await wait_for_callback_url(page, expected_callback_url, timeout_s=30.0)
+                callback_url = await wait_for_callback_url(
+                    page,
+                    expected_callback_url,
+                    timeout_s=30.0,
+                    callback_server=callback_server,
+                )
                 print(f"[OpenAI] Consent submitted. Final URL: {callback_url}")
                 return callback_url
             if terminal_state.status == "callback":
@@ -483,6 +514,7 @@ async def openai_second_login(page, email: str, password: str, access_token: str
             await is_selector_visible(page, CSS_OA_NAME_INPUT)
             or await is_selector_visible(page, CSS_OA_BIRTHDAY_YEAR)
             or age_selector
+            or await find_visible_selector(page, CSS_OA_BIRTHDAY_INPUT_SELECTORS)
             or await has_selector(page, CSS_OA_BIRTHDAY_HIDDEN_INPUT)
         ):
             print(f"[OpenAI] Profile page found during login, name: {name}, birthday: {birthday}, age: {age}, year: {year}")

@@ -58,6 +58,7 @@ from .openai_selectors import (
     CSS_OA_ACCOUNT_EXISTS_ERROR,
     CSS_OA_AGE_INPUT_SELECTORS,
     CSS_OA_BIRTHDAY_HIDDEN_INPUT,
+    CSS_OA_BIRTHDAY_INPUT_SELECTORS,
     CSS_OA_BIRTHDAY_YEAR,
     CSS_OA_CODE_INPUT,
     CSS_OA_CONTINUE_BTN,
@@ -103,12 +104,13 @@ async def get_login_terminal_state(page):
     return await _get_login_terminal_state(page, get_expected_callback_url())
 
 
-async def wait_for_callback_url(page, timeout_s: float = 15.0, poll_interval_s: float = 0.2) -> str:
+async def wait_for_callback_url(page, timeout_s: float = 15.0, poll_interval_s: float = 0.2, callback_server=None) -> str:
     return await _wait_for_callback_url(
         page,
         get_expected_callback_url(),
         timeout_s=timeout_s,
         poll_interval_s=poll_interval_s,
+        callback_server=callback_server,
     )
 
 
@@ -124,5 +126,13 @@ async def openai_login_flow(page, email: str, password: str, access_token: str):
     return await _openai_login_flow(page, email, password, access_token, get_expected_callback_url())
 
 
-async def openai_second_login(page, email: str, password: str, access_token: str, auth_url: str):
-    return await _openai_second_login(page, email, password, access_token, auth_url, get_expected_callback_url())
+async def openai_second_login(page, email: str, password: str, access_token: str, auth_url: str, callback_server=None):
+    return await _openai_second_login(
+        page,
+        email,
+        password,
+        access_token,
+        auth_url,
+        get_expected_callback_url(),
+        callback_server=callback_server,
+    )

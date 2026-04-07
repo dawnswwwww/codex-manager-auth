@@ -11,6 +11,7 @@ from .checkpoint import (
     find_account_result,
     upsert_account_result,
 )
+from .callback_server import LocalOAuthCallbackServer
 from .config import APP_CONFIG
 from .models import AccountExecutionResult, AccountRecord, RegistrationFlowOutcome
 from .openai_flows import execute_stage_with_retry, openai_register, openai_second_login, verify_registration_complete
@@ -209,19 +210,21 @@ async def run_login_stage(
                 oauth_session = oauth_client.create_session()
                 auth_url = oauth_client.build_auth_url(oauth_session)
                 expected_callback_url = oauth_client.get_expected_callback_url()
-                page = await new_stealth_page(context)
-                try:
-                    callback_url = await openai_second_login(
-                        page,
-                        account.email,
-                        password,
-                        access_token,
-                        auth_url,
-                        expected_callback_url,
-                    )
-                    return callback_url, oauth_session
-                finally:
-                    await close_page_quietly(page)
+                async with LocalOAuthCallbackServer(expected_callback_url) as callback_server:
+                    page = await new_stealth_page(context)
+                    try:
+                        callback_url = await openai_second_login(
+                            page,
+                            account.email,
+                            password,
+                            access_token,
+                            auth_url,
+                            expected_callback_url,
+                            callback_server=callback_server,
+                        )
+                        return callback_url, oauth_session
+                    finally:
+                        await close_page_quietly(page)
 
             login_result = await execute_stage_with_retry(
                 "login",

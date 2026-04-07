@@ -6,7 +6,12 @@ CSS_OA_PASSWORD_BTN = 'form:has(input[name="new-password"]) button[type="submit"
 CSS_OA_CODE_INPUT = 'input[name="code"]'
 CSS_OA_NAME_INPUT = 'input[name="name"]:not([type="hidden"])'
 CSS_OA_BIRTHDAY_YEAR = '[data-type="year"]'
-CSS_OA_BIRTHDAY_HIDDEN_INPUT = 'input[name="birthday"]'
+CSS_OA_BIRTHDAY_INPUT_SELECTORS = (
+    'input[name="birthday"]:not([type="hidden"])',
+    'input[aria-label*="生日"]',
+    'input[placeholder*="生日"]',
+)
+CSS_OA_BIRTHDAY_HIDDEN_INPUT = 'input[name="birthday"][type="hidden"]'
 CSS_OA_AGE_INPUT_SELECTORS = (
     'input[name="age"]:not([type="hidden"])',
     'input[aria-label="年龄"]',

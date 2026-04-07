@@ -509,6 +509,87 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
         oauth_client.exchange_token_and_save.assert_awaited_once_with("auth-code", "user@example.com", oauth_client.session)
         self.assertEqual(result.login_status, "success")
 
+    async def test_run_login_stage_starts_local_callback_server(self):
+        class _RunPage:
+            pass
+
+        class _RunContext:
+            def __init__(self):
+                self.new_page = AsyncMock(return_value=_RunPage())
+
+        class _RunBrowser:
+            def __init__(self, context):
+                self.new_context = AsyncMock(return_value=context)
+                self.close = AsyncMock()
+
+        class _RunPlaywrightManager:
+            def __init__(self, browser):
+                self.chromium = type("Chromium", (), {"launch": AsyncMock(return_value=browser)})()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeCallbackServer:
+            instances = []
+
+            def __init__(self, callback_url):
+                self.callback_url = callback_url
+                self.started = False
+                self.closed = False
+                _FakeCallbackServer.instances.append(self)
+
+            async def __aenter__(self):
+                self.started = True
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                self.closed = True
+                return False
+
+        context = _RunContext()
+        browser = _RunBrowser(context)
+        playwright_manager = _RunPlaywrightManager(browser)
+        stealth = type("StealthStub", (), {"apply_stealth_async": AsyncMock()})()
+        oauth_client = _FakeOAuthClient()
+        registration_result = main.AccountExecutionResult(
+            email="user@example.com",
+            password="Secret123000",
+            registration_status="success",
+            login_status="pending",
+            error_reason="",
+            registration_attempts=1,
+        )
+        account = main.AccountRecord(
+            email="user@example.com",
+            password="Secret123",
+            client_id="client-123",
+            refresh_token="refresh-token",
+        )
+
+        with patch.object(app_runner, "async_playwright", return_value=playwright_manager), patch.object(
+            app_runner,
+            "exchange_refresh_token",
+            AsyncMock(return_value="access-token"),
+        ), patch.object(
+            app_runner,
+            "LocalOAuthCallbackServer",
+            _FakeCallbackServer,
+        ), patch.object(
+            app_runner,
+            "openai_second_login",
+            AsyncMock(return_value=f"{oauth_client.redirect_uri}?code=auth-code&state=session"),
+        ) as login_mock, patch.object(playwright_helpers, "Stealth", return_value=stealth), patch.object(app_runner, "OAUTH_CLIENT", oauth_client):
+            await main.run_login_stage(account, registration_result)
+
+        self.assertEqual(len(_FakeCallbackServer.instances), 1)
+        self.assertEqual(_FakeCallbackServer.instances[0].callback_url, oauth_client.redirect_uri)
+        self.assertTrue(_FakeCallbackServer.instances[0].started)
+        self.assertTrue(_FakeCallbackServer.instances[0].closed)
+        self.assertIs(login_mock.await_args.kwargs["callback_server"], _FakeCallbackServer.instances[0])
+
     async def test_openai_login_flow_raises_when_no_expected_followup_state_is_detected(self):
         page = _LoginFlowPage()
 
@@ -1069,6 +1150,25 @@ class ExecutionReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn((main.CSS_OA_NAME_INPUT, "BadameWages"), page.typed)
         self.assertIn((main.CSS_OA_BIRTHDAY_HIDDEN_INPUT, "1993-08-14"), page.evaluated)
+
+    async def test_fill_profile_age_types_visible_birthday_input_when_present(self):
+        page = _ProfilePage(
+            {
+                main.CSS_OA_NAME_INPUT: True,
+                main.CSS_OA_BIRTHDAY_YEAR: False,
+                main.CSS_OA_AGE_INPUT_SELECTORS[0]: False,
+                main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0]: True,
+                main.CSS_OA_BIRTHDAY_HIDDEN_INPUT: False,
+            }
+        )
+
+        with patch.object(openai_flows, "human_delay", AsyncMock()):
+            await main.fill_profile_age(page, "KanoaDaggett", "27", "1999", "1999-04-07")
+
+        self.assertIn((main.CSS_OA_NAME_INPUT, "KanoaDaggett"), page.typed)
+        self.assertIn(main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], page.clicks)
+        self.assertIn((main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], "Control+a"), page.presses)
+        self.assertIn((main.CSS_OA_BIRTHDAY_INPUT_SELECTORS[0], "1999/04/07"), page.typed)
 
     async def test_fill_profile_age_uses_visible_year_spinbutton_when_present(self):
         page = _ProfilePage(
