@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -74,6 +75,15 @@ class AccountFileParsingTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first.name, "宝贝信息-985260403233027741_checkpoint.csv")
 
+    def test_build_batch_token_output_dir_uses_account_file_stem_and_timestamp(self):
+        batch_token_dir = app_runner.build_batch_token_output_dir(
+            Path("/tmp/a.txt"),
+            token_root=Path("/tmp/tokens"),
+            started_at=datetime(2026, 4, 7, 15, 30, 45),
+        )
+
+        self.assertEqual(batch_token_dir, Path("/tmp/tokens/a-20260407-153045-tokens"))
+
 
 class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_accounts_delegates_to_full_chain_execution(self):
@@ -94,6 +104,56 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
 
         full_chain_mock.assert_awaited_once_with(accounts_file)
         self.assertEqual(csv_path, expected_csv_path)
+
+    async def test_run_accounts_full_chain_uses_batch_token_directory_named_after_account_file(self):
+        with TemporaryDirectory() as tmpdir:
+            accounts_file = Path(tmpdir) / "a.txt"
+            accounts_file.write_text(
+                "alpha@example.com----Alpha123----client-a----refresh-a\n",
+                encoding="utf-8",
+            )
+            expected_csv_path = Path(tmpdir) / "checkpoint.csv"
+            batch_token_dir = Path(tmpdir) / "tokens" / "a-20260407-153045-tokens"
+            observed = {}
+            final_result = main.AccountExecutionResult(
+                email="alpha@example.com",
+                password="Alpha123000",
+                registration_status="already_exists",
+                login_status="success",
+                error_reason="",
+            )
+
+            class _FakeOAuthClient:
+                client_id = "client-123"
+                redirect_port = 2456
+                scope = "openid profile"
+                token_output_dir = Path(tmpdir) / "tokens"
+
+            async def fake_run(**kwargs):
+                observed["token_output_dir"] = kwargs["oauth_client"].token_output_dir
+                return final_result
+
+            with patch.object(
+                app_runner,
+                "build_checkpoint_csv_path",
+                return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "build_batch_token_output_dir",
+                return_value=batch_token_dir,
+            ) as batch_dir_mock, patch.object(
+                app_runner,
+                "run",
+                AsyncMock(side_effect=fake_run),
+            ), patch.object(
+                app_runner,
+                "OAUTH_CLIENT",
+                _FakeOAuthClient(),
+            ):
+                await main.run_accounts_full_chain(accounts_file)
+
+        batch_dir_mock.assert_called_once()
+        self.assertEqual(observed["token_output_dir"], batch_token_dir)
 
     async def test_run_accounts_full_chain_updates_checkpoint_with_final_result(self):
         with TemporaryDirectory() as tmpdir:
@@ -154,6 +214,10 @@ class RunAccountsTests(unittest.IsolatedAsyncioTestCase):
                 app_runner,
                 "build_checkpoint_csv_path",
                 return_value=expected_csv_path,
+            ), patch.object(
+                app_runner,
+                "build_batch_token_output_dir",
+                return_value=token_dir,
             ), patch.object(
                 app_runner,
                 "run",

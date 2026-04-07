@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import async_playwright
@@ -13,7 +14,7 @@ from .checkpoint import (
 from .config import APP_CONFIG
 from .models import AccountExecutionResult, AccountRecord, RegistrationFlowOutcome
 from .openai_flows import execute_stage_with_retry, openai_register, openai_second_login, verify_registration_complete
-from .openai_oauth import OpenAIOAuthClient
+from .openai_oauth import DEFAULT_SCOPE, OpenAIOAuthClient
 from .outlook_mail import exchange_refresh_token
 from .playwright_helpers import close_page_quietly, launch_browser_and_context, new_stealth_page
 
@@ -36,6 +37,34 @@ def normalize_registration_flow_outcome(value) -> RegistrationFlowOutcome:
 
 def get_expected_callback_url() -> str:
     return OAUTH_CLIENT.get_expected_callback_url()
+
+
+def build_batch_token_output_dir(
+    accounts_file: Path,
+    token_root: Path | None = None,
+    started_at: datetime | None = None,
+) -> Path:
+    batch_started_at = started_at or datetime.now().astimezone()
+    root_dir = Path(token_root or APP_CONFIG.token_output_dir)
+    return root_dir / f"{accounts_file.stem}-{batch_started_at.strftime('%Y%m%d-%H%M%S')}-tokens"
+
+
+def build_batch_oauth_client(
+    accounts_file: Path,
+    base_client: OpenAIOAuthClient | object | None = None,
+    started_at: datetime | None = None,
+) -> OpenAIOAuthClient:
+    source_client = base_client or OAUTH_CLIENT
+    return OpenAIOAuthClient(
+        client_id=getattr(source_client, "client_id", APP_CONFIG.oauth_client_id),
+        redirect_port=getattr(source_client, "redirect_port", APP_CONFIG.oauth_redirect_port),
+        token_output_dir=build_batch_token_output_dir(
+            accounts_file,
+            token_root=Path(getattr(source_client, "token_output_dir", APP_CONFIG.token_output_dir)),
+            started_at=started_at,
+        ),
+        scope=getattr(source_client, "scope", DEFAULT_SCOPE),
+    )
 
 
 def should_attempt_login(result: AccountExecutionResult) -> bool:
@@ -67,7 +96,11 @@ def is_transient_auth_navigation_result(result: AccountExecutionResult) -> bool:
     )
 
 
-async def run_registration_stage(account: AccountRecord) -> AccountExecutionResult:
+async def run_registration_stage(
+    account: AccountRecord,
+    oauth_client: OpenAIOAuthClient | None = None,
+) -> AccountExecutionResult:
+    oauth_client = oauth_client or OAUTH_CLIENT
     password = normalize_password(account.password)
     try:
         access_token = await exchange_refresh_token(account.refresh_token, account.client_id)
@@ -87,7 +120,7 @@ async def run_registration_stage(account: AccountRecord) -> AccountExecutionResu
         browser, context = await launch_browser_and_context(p)
         try:
             async def registration_operation():
-                auth_url = OAUTH_CLIENT.build_auth_url(OAUTH_CLIENT.create_session())
+                auth_url = oauth_client.build_auth_url(oauth_client.create_session())
                 page = await new_stealth_page(context)
                 try:
                     registration_outcome = normalize_registration_flow_outcome(
@@ -132,7 +165,12 @@ async def run_registration_stage(account: AccountRecord) -> AccountExecutionResu
     )
 
 
-async def run_login_stage(account: AccountRecord, registration_result: AccountExecutionResult) -> AccountExecutionResult:
+async def run_login_stage(
+    account: AccountRecord,
+    registration_result: AccountExecutionResult,
+    oauth_client: OpenAIOAuthClient | None = None,
+) -> AccountExecutionResult:
+    oauth_client = oauth_client or OAUTH_CLIENT
     password = normalize_password(account.password)
     try:
         access_token = await exchange_refresh_token(account.refresh_token, account.client_id)
@@ -153,9 +191,9 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
         try:
             async def login_operation():
                 print("[Main] Starting second OAuth pass...")
-                oauth_session = OAUTH_CLIENT.create_session()
-                auth_url = OAUTH_CLIENT.build_auth_url(oauth_session)
-                expected_callback_url = OAUTH_CLIENT.get_expected_callback_url()
+                oauth_session = oauth_client.create_session()
+                auth_url = oauth_client.build_auth_url(oauth_session)
+                expected_callback_url = oauth_client.get_expected_callback_url()
                 page = await new_stealth_page(context)
                 try:
                     callback_url = await openai_second_login(
@@ -182,7 +220,7 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
     error = login_result.error if login_result.status != "success" else ""
     if login_result.status == "success":
         callback_url, oauth_session = login_result.value
-        callback_params = OAUTH_CLIENT.extract_callback_params(callback_url, oauth_session)
+        callback_params = oauth_client.extract_callback_params(callback_url, oauth_session)
         if not callback_params:
             overall_status = "failed"
             error = "Invalid OAuth callback parameters"
@@ -194,7 +232,7 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
             error = "OAuth callback did not include an authorization code"
         else:
             try:
-                await OAUTH_CLIENT.exchange_token_and_save(callback_params["code"], account.email, oauth_session)
+                await oauth_client.exchange_token_and_save(callback_params["code"], account.email, oauth_session)
             except Exception as exc:
                 overall_status = "failed"
                 error = str(exc)
@@ -213,19 +251,26 @@ async def run_login_stage(account: AccountRecord, registration_result: AccountEx
     )
 
 
-async def run(email: str, password: str, refresh_token: str, client_id: str):
+async def run(
+    email: str,
+    password: str,
+    refresh_token: str,
+    client_id: str,
+    oauth_client: OpenAIOAuthClient | None = None,
+):
     account = AccountRecord(
         email=email,
         password=password,
         client_id=client_id,
         refresh_token=refresh_token,
     )
-    registration_result = await run_registration_stage(account)
+    oauth_client = oauth_client or OAUTH_CLIENT
+    registration_result = await run_registration_stage(account, oauth_client=oauth_client)
     if not should_attempt_login(registration_result):
         return registration_result
 
     print("[Main] Registration done.")
-    return await run_login_stage(account, registration_result)
+    return await run_login_stage(account, registration_result, oauth_client=oauth_client)
 
 
 async def run_accounts(accounts_file: Path):
@@ -234,8 +279,10 @@ async def run_accounts(accounts_file: Path):
 
 async def run_accounts_full_chain(accounts_file: Path):
     csv_path = build_checkpoint_csv_path(accounts_file)
+    batch_oauth_client = build_batch_oauth_client(accounts_file)
     print(f"[Main] Streaming accounts from {accounts_file}")
     print(f"[Main] Using checkpoint CSV {csv_path}")
+    print(f"[Main] Using batch token directory {batch_oauth_client.token_output_dir}")
 
     accounts = list(iter_accounts(accounts_file))
     total_accounts = len(accounts)
@@ -246,7 +293,7 @@ async def run_accounts_full_chain(accounts_file: Path):
             current_result = create_pending_account_result(account)
             upsert_account_result(csv_path, current_result)
 
-        token_path = OAUTH_CLIENT.token_output_dir / OAUTH_CLIENT.build_token_filename(account.email)
+        token_path = batch_oauth_client.token_output_dir / batch_oauth_client.build_token_filename(account.email)
         if token_path.exists():
             print(f"[Main] [{index}/{total_accounts}] Token already exists for {account.email}, skipping execution.")
             synced_result = AccountExecutionResult(
@@ -268,6 +315,7 @@ async def run_accounts_full_chain(accounts_file: Path):
             password=account.password,
             refresh_token=account.refresh_token,
             client_id=account.client_id,
+            oauth_client=batch_oauth_client,
         )
         upsert_account_result(csv_path, result)
         token_exists = token_path.exists()

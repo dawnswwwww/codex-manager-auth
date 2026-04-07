@@ -43,7 +43,8 @@ uv run python main.py
 
 The default entrypoint now runs the **full chain per account**. It does not batch registration for every row first and login later.
 
-Successful OAuth completion now writes token files into the configured `token_output_dir` (default: `tokens/`).
+Successful OAuth completion now writes token files under a batch-specific subdirectory inside the configured `token_output_dir` root (default: `tokens/`).
+For an account file like `a.txt`, a run will write tokens to a directory like `tokens/a-20260407-153045-tokens/`.
 
 ## Test
 
